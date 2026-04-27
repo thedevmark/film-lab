@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Film Lab</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <h1>Film Lab</h1>
+    </header>
+
+    <main class="film-layout" id="film-workflow">
+        <div class="film-panel">
+            <section class="workflow-step">
+                <h2 class="step-label">1. Select Photo</h2>
+                <div id="film-drop-zone" class="film-drop-zone">
+                    <label for="film-file-input" class="film-drop-label">
+                        <span id="film-file-label">Drop a photo here or click to browse</span>
+                        <span class="film-drop-hint">JPG · PNG · TIFF · ARW · CR2 · CR3 · NEF · RAF · DNG</span>
+                    </label>
+                    <input type="file" id="film-file-input"
+                           accept=".jpg,.jpeg,.png,.tif,.tiff,.webp,.bmp,.arw,.cr2,.cr3,.nef,.orf,.raf,.dng,.rw2,.pef"
+                           class="hidden">
+                </div>
+            </section>
+
+            <section class="workflow-step">
+                <h2 class="step-label">2. Preview</h2>
+                <div class="film-preview-grid">
+                    <div class="film-preview-card">
+                        <div class="film-preview-title">Loaded Photo</div>
+                        <div class="film-preview-frame">
+                            <img id="film-source-preview" class="film-preview-image hidden" alt="Loaded photo preview">
+                            <div id="film-source-preview-placeholder" class="film-preview-placeholder">
+                                Load a photo to preview it here before processing.
+                            </div>
+                        </div>
+                    </div>
+                    <div class="film-preview-card">
+                        <div class="film-preview-title">Processed Output</div>
+                        <div class="film-preview-frame">
+                            <img id="film-output-preview" class="film-preview-image hidden" alt="Processed photo preview">
+                            <div id="film-output-preview-placeholder" class="film-preview-placeholder">
+                                Process the loaded photo to see the rendered JPEG here.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="workflow-step">
+                <h2 class="step-label">3. Preset</h2>
+                <div class="film-preset-row">
+                    <select id="film-preset-select" class="film-select"></select>
+                    <button type="button" class="secondary-btn" id="film-preset-save-btn">Save</button>
+                    <button type="button" class="secondary-btn" id="film-preset-delete-btn" disabled>Delete</button>
+                </div>
+            </section>
+
+            <section class="workflow-step">
+                <h2 class="step-label">4. Adjust</h2>
+
+                <div class="film-slider-group">
+                    <div class="film-slider-header">
+                        <span class="film-slider-label">Film Grade</span>
+                        <span class="film-slider-value" id="film-grade-strength-val">—</span>
+                    </div>
+                    <input type="range" id="film-grade-strength" class="film-slider">
+                </div>
+
+                <div class="film-slider-group">
+                    <div class="film-slider-header">
+                        <span class="film-slider-label">Exposure</span>
+                        <span class="film-slider-value" id="film-exposure-bias-val">—</span>
+                    </div>
+                    <input type="range" id="film-exposure-bias" class="film-slider">
+                </div>
+
+                <div class="film-slider-group">
+                    <div class="film-slider-header">
+                        <span class="film-slider-label">Contrast</span>
+                        <span class="film-slider-value" id="film-contrast-strength-val">—</span>
+                    </div>
+                    <input type="range" id="film-contrast-strength" class="film-slider">
+                </div>
+
+                <div class="film-slider-group">
+                    <div class="film-slider-header">
+                        <span class="film-slider-label">Grain Intensity</span>
+                        <span class="film-slider-value" id="film-grain-intensity-val">—</span>
+                    </div>
+                    <input type="range" id="film-grain-intensity" class="film-slider">
+                </div>
+
+                <div class="film-slider-group">
+                    <div class="film-slider-header">
+                        <span class="film-slider-label">Grain Size</span>
+                        <span class="film-slider-value" id="film-grain-size-val">—</span>
+                    </div>
+                    <input type="range" id="film-grain-size" class="film-slider">
+                </div>
+
+                <div class="film-slider-group">
+                    <div class="film-slider-header">
+                        <span class="film-slider-label">Halation Intensity</span>
+                        <span class="film-slider-value" id="film-halation-intensity-val">—</span>
+                    </div>
+                    <input type="range" id="film-halation-intensity" class="film-slider">
+                </div>
+
+                <div class="film-slider-group">
+                    <div class="film-slider-header">
+                        <span class="film-slider-label">Halation Radius</span>
+                        <span class="film-slider-value" id="film-halation-radius-val">—</span>
+                    </div>
+                    <input type="range" id="film-halation-radius" class="film-slider">
+                </div>
+            </section>
+
+            <section class="workflow-step">
+                <h2 class="step-label">5. Output</h2>
+                <div class="film-action-row">
+                    <button type="button" class="primary-btn" id="film-process-btn" disabled
+                            onclick="FilmLab.processPhoto()">Process Photo</button>
+                    <button type="button" class="secondary-btn" id="film-download-btn" disabled>Download JPG</button>
+                </div>
+                <p id="film-status" class="settings-hint"></p>
+            </section>
+        </div>
+    </main>
+
+    <script src="/static/js/film.js"></script>
+    <script>
+        document.addEventListener("DOMContentLoaded", () => FilmLab.init());
+    </script>
+</body>
+</html>
