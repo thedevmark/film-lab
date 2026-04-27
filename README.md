@@ -1,4 +1,4 @@
-# Film Studio
+# Film Lab
 
 Private personal photo style tool. Mathematical Fuji Gold 400 rendering with grain and halation. Browser-based UI on top of a small Flask host.
 
@@ -17,7 +17,7 @@ Then open http://localhost:3100.
 
 - `film.py` — pipeline (exposure, film color, contrast, halation, grain), preset persistence, Flask routes.
 - `app.py` — minimal Flask host, port discovery, presets file location.
-- `static/index.html` — single-page Film Studio UI.
+- `static/index.html` — single-page Film Lab UI.
 - `static/js/film.js` — frontend module (presets, sliders, drop zone, process button).
 - `static/css/style.css` — design tokens + shared shell + film section. Copied whole from alert-alert for now; can be slimmed later to film-only rules.
 
@@ -25,7 +25,7 @@ Then open http://localhost:3100.
 
 User presets are saved to:
 
-- Windows: `%LOCALAPPDATA%\film-studio\film_presets.json`
+- Windows: `%LOCALAPPDATA%\film-lab\film_presets.json`
 - Other:   `./.appstate/film_presets.json`
 
 ## Built-ins

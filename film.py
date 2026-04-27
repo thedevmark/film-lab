@@ -1,4 +1,4 @@
-"""Film Studio pipeline — photo style processing with mathematical film rendering, grain, and halation."""
+"""Film Lab pipeline — photo style processing with mathematical film rendering, grain, and halation."""
 
 from __future__ import annotations
 
@@ -81,7 +81,7 @@ def _require_numpy():
         try:
             import numpy as np
         except ImportError as exc:
-            raise RuntimeError("numpy is not installed — Film Studio is unavailable until its dependencies are installed.") from exc
+            raise RuntimeError("numpy is not installed — Film Lab is unavailable until its dependencies are installed.") from exc
         _NUMPY = np
     return _NUMPY
 
@@ -273,7 +273,7 @@ def _save_user_presets(presets_file: Path, user_presets: dict):
 # ── Flask routes ──────────────────────────────────────────────────────────────
 
 def register_film_routes(app, presets_file: Path):
-    """Register all Film Studio routes on the Flask app."""
+    """Register all Film Lab routes on the Flask app."""
 
     @app.route("/api/film/presets")
     def film_get_presets():

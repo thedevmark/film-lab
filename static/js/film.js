@@ -1,8 +1,8 @@
 /**
- * Film Studio — frontend module for photo style processing.
+ * Film Lab — frontend module for photo style processing.
  * Fuji Gold 400 film effect: LUT, grain, halation. Preset system + sliders.
  */
-const FilmStudio = (() => {
+const FilmLab = (() => {
     // Default params — mirrors BUILTIN_PRESETS["Fuji Gold 400 — Standard"]
     const DEFAULT_PARAMS = {
         grade_strength:      0.85,
