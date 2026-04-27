@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Film Lab</title>
+    <title>Film Studio</title>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
     <header>
-        <h1>Film Lab</h1>
+        <h1>Film Studio</h1>
     </header>
 
     <main class="film-layout" id="film-workflow">
@@ -123,7 +123,7 @@
                 <h2 class="step-label">5. Output</h2>
                 <div class="film-action-row">
                     <button type="button" class="primary-btn" id="film-process-btn" disabled
-                            onclick="FilmLab.processPhoto()">Process Photo</button>
+                            onclick="FilmStudio.processPhoto()">Process Photo</button>
                     <button type="button" class="secondary-btn" id="film-download-btn" disabled>Download JPG</button>
                 </div>
                 <p id="film-status" class="settings-hint"></p>
@@ -133,7 +133,7 @@
 
     <script src="/static/js/film.js"></script>
     <script>
-        document.addEventListener("DOMContentLoaded", () => FilmLab.init());
+        document.addEventListener("DOMContentLoaded", () => FilmStudio.init());
     </script>
 </body>
 </html>

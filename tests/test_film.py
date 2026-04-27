@@ -48,7 +48,7 @@ def _skip_reason(*errors):
     for error in errors:
         if error is not None:
             return str(error)
-    return "required Film Lab test dependencies are unavailable"
+    return "required Film Studio test dependencies are unavailable"
 
 
 @unittest.skipUnless(FILM_MATH_READY, _skip_reason(FILM_IMPORT_ERROR, NUMPY_IMPORT_ERROR, PIL_IMPORT_ERROR))

@@ -1,4 +1,4 @@
-"""Film Lab — minimal Flask host for the photo style processor.
+"""Film Studio — minimal Flask host for the photo style processor.
 
 Private personal tool. Browser mode by default; run from source with:
 
@@ -33,7 +33,7 @@ else:
 
 if platform.system() == "Windows":
     local_app_data = os.environ.get("LOCALAPPDATA")
-    APP_STATE_DIR = (Path(local_app_data) if local_app_data else BASE_DIR) / "film-lab"
+    APP_STATE_DIR = (Path(local_app_data) if local_app_data else BASE_DIR) / "film-studio"
 else:
     APP_STATE_DIR = BASE_DIR / ".appstate"
 
@@ -56,9 +56,9 @@ register_film_routes(app, PRESETS_FILE)
 
 # ── Server start ──────────────────────────────────────────────────────────────
 
-DEFAULT_HOST = os.environ.get("FILM_LAB_HOST", "localhost").strip() or "localhost"
+DEFAULT_HOST = os.environ.get("FILM_STUDIO_HOST", "localhost").strip() or "localhost"
 try:
-    DEFAULT_PORT = int(os.environ.get("FILM_LAB_PORT", "3100"))
+    DEFAULT_PORT = int(os.environ.get("FILM_STUDIO_PORT", "3100"))
 except ValueError:
     DEFAULT_PORT = 3100
 
@@ -87,5 +87,5 @@ def start_server(host: str = DEFAULT_HOST, port: int | None = None) -> int:
 
 if __name__ == "__main__":
     port = find_available_port(DEFAULT_HOST, DEFAULT_PORT)
-    print(f"Film Lab running on http://{DEFAULT_HOST}:{port}")
+    print(f"Film Studio running on http://{DEFAULT_HOST}:{port}")
     app.run(host=DEFAULT_HOST, port=port, debug=False, use_reloader=False, threaded=True)
