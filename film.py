@@ -13,9 +13,8 @@ from flask import request, jsonify, send_file
 # ── Built-in presets ─────────────────────────────────────────────────────────
 # Built-ins live in code only — cannot be overwritten by the user.
 #
-# Derived from a scan of 45 shoot folders / 2,602 raw-to-edited pairs
-# (D:\OneDrive\_Photo Library, 2023-2026, DxO FilmPack 6/7).
-# Two measured scene families:
+# Derived from a scan of 45 shoot folders / 2,602 raw-to-edited pairs from a
+# personal library (2023-2026). Two measured scene families:
 #
 #   Ambient Film — daylight/ambient sets:
 #     avg luminance −6.9 units, blue reduced most (B > G > R), sat +4.1pp,
