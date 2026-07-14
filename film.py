@@ -13,8 +13,6 @@ from pathlib import Path
 from PIL import Image, ImageOps
 from flask import request, jsonify, send_file
 
-from filmlab.blur import gaussian_blur
-
 # ── Built-in presets ─────────────────────────────────────────────────────────
 # Built-ins live in code only — cannot be overwritten by the user.
 #
@@ -239,6 +237,7 @@ def add_halation(img, intensity, radius):
     catches most of the light that bounced. Blue is left alone.
     """
     np = _require_numpy()
+    from filmlab.blur import gaussian_blur
     if intensity <= 0:
         return img
 
