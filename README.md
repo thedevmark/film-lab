@@ -32,48 +32,62 @@ RAW support (`.arw`, `.cr2`, `.cr3`, `.nef`, `.raf`, `.dng`, …) comes from
 
 | Control | What it does |
 | --- | --- |
-| **Grade strength** | How far to push the film color response |
-| **Exposure** | Brightness offset |
-| **Contrast** | S-curve around mid-gray |
-| **Grain** | Intensity and size, weighted by luminance |
-| **Halation** | Intensity and radius of the red highlight bloom |
+| **Grade strength** | How far to blend in the film LUT |
+| **Exposure** | EV stops — a multiply in linear light, so hue is preserved |
+| **Contrast** | S-curve around mid-gray, applied *after* the LUT |
+| **Grain** | Intensity, and size as a fraction of the short edge |
+| **Halation** | Intensity, and radius as a fraction of the long edge |
+
+Sizes are fractions rather than pixel counts so the look is the same on a
+downscaled preview and on a full-resolution export.
 
 Presets ship as built-ins and can't be overwritten. Anything you dial in
 yourself can be saved alongside them, and lives at
 `%LOCALAPPDATA%\film-lab\film_presets.json` on Windows or `./.appstate/` elsewhere.
 
-## Where the color comes from — and where it's going
+## Where the color comes from
 
-Be aware of what this currently is. `apply_film_color()` in `film.py` is
-**hand-tuned math, not a measured film profile**: per-channel gamma powers, a
-Gaussian midtone-warmth mask, a shadow crossover term. It produces a pleasant
-warm negative-film rendering, and it is emphatically an approximation.
+From a **3D LUT** — a measured mapping from every input color to an output
+color, applied with tetrahedral interpolation. It is the same thing DxO FilmPack
+and darktable's `lut3d` module do. There is no hand-tuned color math in the
+pipeline, by design: a guess at what film does is a guess, however pleasant.
 
-Real film emulation — what DxO FilmPack and darktable's `lut3d` module do — uses
-a **3D LUT**: a measured mapping from every input color to an output color. That
-is the direction this is headed:
+The pipeline, in order:
 
-- [ ] Replace the hand-tuned grade with a HaldCLUT loader (trilinear interpolation)
-- [ ] Move exposure and halation into **linear light**, where they're physical —
-      exposure is a multiply (`× 2^EV`), not the additive offset it is today,
-      and halation is per-channel scatter with σ<sub>R</sub> > σ<sub>G</sub> > σ<sub>B</sub>
-- [ ] Apply the LUT *after* tone mapping, in gamma-encoded sRGB, clipped to
-      [0,1] — which is where film LUTs are defined and where darktable applies them
-- [ ] Weight grain toward the **midtones** via a paper-response curve, rather
-      than toward the shadows as it is now
-- [ ] Batch: folder in, folder out, resumable
+```
+load -> (linear, scene|display)
+exposure      linear x 2**EV
+halation      linear, additive, red-dominant
+[if scene]    grey-point scale — neutral, no look
+rolloff       hue-preserving highlight compression
+srgb encode   + clip to [0,1]
+LUT           tetrahedral, strength blend
+contrast      post-LUT user finish, 0 in every preset
+grain         last — texture on a finished frame
+-> JPEG
+```
 
-LUTs are **bring-your-own**. This repo will ship a loader and an openly-licensed
-default, and will not redistribute profiles extracted from commercial software.
-If you own a licensed copy of an editor, extracting a LUT from it for your own
-use is your business; publishing that LUT is not something this project will do
-for you.
+Contrast sits after the LUT because the CLUTs were authored against a neutral,
+standard-contrast render; look-contrast in front of them would be counted twice.
+
+LUTs are **bring-your-own** and live in `luts/` — see [luts/README.md](luts/README.md)
+and [docs/extracting-a-lut.md](docs/extracting-a-lut.md). With none installed the
+color stage is a no-op and everything else still runs. This repo will not
+redistribute profiles extracted from commercial software. If you own a licensed
+copy of an editor, extracting a LUT from it for your own use is your business;
+publishing that LUT is not something this project will do for you.
+
+Still to come: batch — folder in, folder out, resumable.
 
 ## Files
 
-- `film.py` — the pipeline (exposure, color, contrast, halation, grain), presets, routes
+- `film.py` — pipeline order, params, presets, routes
+- `filmlab/` — `loader` (linear + scene/display state), `tone` (transfer functions,
+  rolloff), `lut` (HaldCLUT + tetrahedral interpolation), `effects` (halation, grain), `blur`
 - `app.py` — Flask host, port discovery, state paths
 - `static/` — single-page UI
+- `luts/` — HaldCLUT PNGs; `private/` is gitignored
+- `tools/make_hald.py` — writes an identity HaldCLUT to render through an editor
 - `tools/make_icon.py` — regenerates the icon from `static/img/app-icon.svg`
 - `tests/` — `python -m unittest discover -s tests`
 

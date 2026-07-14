@@ -1,17 +1,23 @@
 /**
  * Film Lab — frontend module for photo style processing.
- * Fuji Gold 400 film effect: LUT, grain, halation. Preset system + sliders.
+ * Film effect: 3D LUT, grain, halation. Preset system + sliders.
  */
 const FilmLab = (() => {
-    // Default params — mirrors BUILTIN_PRESETS["Fuji Gold 400 — Standard"]
+    // Default params — mirrors film.DEFAULT_PARAMS.
+    //
+    // exposure_bias is EV stops. grain_size is a fraction of the short edge and
+    // halation_radius a fraction of the long edge, so the look is the same on a
+    // preview and on a full-resolution export. Neither is a pixel count.
     const DEFAULT_PARAMS = {
+        lut:                 "kodak_gold_200",
         grade_strength:      0.85,
         exposure_bias:       0.00,
         contrast_strength:   0.00,
         grain_intensity:     0.055,
-        grain_size:          3,
+        grain_size:          0.0015,
         halation_intensity:  0.45,
-        halation_radius:     38,
+        halation_radius:     0.010,
+        seed:                0,
     };
 
     let currentParams = { ...DEFAULT_PARAMS };
@@ -40,8 +46,8 @@ const FilmLab = (() => {
             id:      "film-exposure-bias",
             param:   "exposure_bias",
             valueId: "film-exposure-bias-val",
-            format:  v => v === 0 ? "0" : (v > 0 ? `+${Math.round(v * 100)}` : `${Math.round(v * 100)}`),
-            min: -0.15, max: 0.15, step: 0.005,
+            format:  v => `${v > 0 ? "+" : ""}${v.toFixed(2)} EV`,
+            min: -3, max: 3, step: 0.05,
         },
         {
             id:      "film-contrast-strength",
@@ -61,8 +67,8 @@ const FilmLab = (() => {
             id:      "film-grain-size",
             param:   "grain_size",
             valueId: "film-grain-size-val",
-            format:  v => `${Math.round(v)}px`,
-            min: 1, max: 8, step: 1,
+            format:  v => `${(v * 100).toFixed(2)}%`,  // of the short edge
+            min: 0, max: 0.005, step: 0.0001,
         },
         {
             id:      "film-halation-intensity",
@@ -75,8 +81,8 @@ const FilmLab = (() => {
             id:      "film-halation-radius",
             param:   "halation_radius",
             valueId: "film-halation-radius-val",
-            format:  v => `${Math.round(v)}px`,
-            min: 5, max: 80, step: 1,
+            format:  v => `${(v * 100).toFixed(1)}%`,  // of the long edge
+            min: 0, max: 0.05, step: 0.001,
         },
     ];
 
