@@ -58,13 +58,4 @@ def highlight_rolloff(rgb, knee: float = 0.8):
     safe = np.where(norm > np.float32(1e-6), norm, np.float32(1.0))
     scale = np.where(norm > knee, compressed / safe, np.float32(1.0))
 
-    # Ensure scale is monotonically non-decreasing along spatial dimensions
-    # by applying maximum-accumulate. This guarantees monotonic output for
-    # monotonic input while preserving the channel ratios (hue).
-    orig_shape = scale.shape
-    if len(orig_shape) >= 2:
-        scale_2d = scale.reshape(-1, orig_shape[-1])
-        scale_2d = np.maximum.accumulate(scale_2d, axis=0)
-        scale = scale_2d.reshape(orig_shape)
-
     return np.clip(rgb * scale, 0.0, 1.0).astype(np.float32)

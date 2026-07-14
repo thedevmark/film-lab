@@ -88,9 +88,44 @@ class TestHighlightRolloff(unittest.TestCase):
 
         out = tone.highlight_rolloff(rgb, knee=0.8)[0, :, 0]
 
-        self.assertTrue(np.all(np.diff(out) >= -1e-7), "rolloff must be monotonic")
+        # -1e-6, not -1e-7: float32 epsilon near 1.0 is ~1.2e-7, and the
+        # divide-then-multiply round trip legitimately costs a few ULPs.
+        # This is not real non-monotonicity, just float32 slack.
+        self.assertTrue(np.all(np.diff(out) >= -1e-6), "rolloff must be monotonic")
         # No step at the knee: the largest jump should be tiny.
         self.assertLess(float(np.abs(np.diff(out)).max()), 0.01)
+
+    def test_is_pointwise(self):
+        """Each pixel must depend on itself alone.
+
+        A previous implementation ran a cumulative maximum across the flattened
+        image, so one bright pixel raised the scale factor for every pixel after
+        it in raster order. Nothing in the suite caught it.
+        """
+        rng = np.random.default_rng(0)
+        img = (rng.random((8, 8, 3), dtype=np.float32) * 3.0).astype(np.float32)
+
+        whole = tone.highlight_rolloff(img)
+
+        # Every pixel, processed alone, must give the same answer as it does
+        # inside the full image.
+        for y in range(img.shape[0]):
+            for x in range(img.shape[1]):
+                alone = tone.highlight_rolloff(img[y:y + 1, x:x + 1, :])
+                np.testing.assert_allclose(
+                    alone[0, 0], whole[y, x], atol=1e-6,
+                    err_msg=f"pixel ({y},{x}) changed depending on its neighbours",
+                )
+
+    def test_pixel_order_does_not_matter(self):
+        """Reversing raster order must reverse the output, nothing more."""
+        rng = np.random.default_rng(1)
+        img = (rng.random((4, 6, 3), dtype=np.float32) * 3.0).astype(np.float32)
+
+        forward = tone.highlight_rolloff(img)
+        reversed_out = tone.highlight_rolloff(img[::-1, ::-1, :])
+
+        np.testing.assert_allclose(reversed_out, forward[::-1, ::-1, :], atol=1e-6)
 
 
 if __name__ == "__main__":
