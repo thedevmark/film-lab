@@ -314,11 +314,31 @@ resumes rather than redoing.
 
 ## Open risks
 
-**The default LUT may not exist.** spektrafilm's profile set is built from
-datasheet curves; whether it has a **Kodak Gold** profile specifically is
-*unverified*. If it does not, the shipped default is an analogue (Agfa Vista 200
-/ Elite Color 200) and Gold remains bring-your-own. This is worth checking before
-phase 1, because it is cheap to check and it changes what phase 5 is.
+**~~The default LUT may not exist.~~ RESOLVED — it does.** spektrafilm ships
+`kodak_gold_200.json`: a measured profile with 81 wavelengths of spectral
+sensitivity, per-layer base density, 256-point density curves, Status M
+densitometry, D55 reference. It also has a first-class HaldCLUT exporter whose
+**supported path is sRGB in, sRGB out** — its scene-linear input spaces are
+deliberately disabled, for exactly the reason given above (a uniform [0,1] cube
+cannot represent scene-linear highlights past diffuse white). The earlier worry
+that spektrafilm's linear-in/linear-out core made it unsuitable for a
+display-referred HaldCLUT was backwards. Kodak Gold *100* does not exist in the
+set — long discontinued, no datasheet — but 200 is the one that matters.
+
+**The baked LUT is CC BY-SA 4.0, not MIT.** spektrafilm's licence states that
+LUTs "are interpreted as direct encodings of the information in the original
+profiles" and carry the profile licence. So the shipped LUT is a per-directory
+licence carve-out with attribution, and **the bake script cannot live in this
+repo** — it imports GPL code. The command is documented instead. Photographs made
+with the LUT carry no copyleft.
+
+**The LUT will render brighter than the source.** spektrafilm's
+`stops_above_midgray` defaults to 4.0 against a film whose native headroom is
+~2.47 stops, chosen so that encoded 1.0 lands on the shoulder and the rolloff
+engages on already-rendered SDR input. Its own docs call this "an aesthetic
+interpretation, not a measurement." If the phase 3 A/B shows a systematic
+brightness offset, this is the knob — not the grey-point scale, and not the
+sliders.
 
 **8-bit rendered input, pushed.** A JPEG decoded to linear, EV-pushed, halated,
 rolled off, re-encoded, and LUT'd is a lot of transform on 256 levels per
