@@ -13,6 +13,8 @@ from pathlib import Path
 from PIL import Image, ImageOps
 from flask import request, jsonify, send_file
 
+from filmlab.blur import gaussian_blur
+
 # ── Built-in presets ─────────────────────────────────────────────────────────
 # Built-ins live in code only — cannot be overwritten by the user.
 #
@@ -230,48 +232,6 @@ def add_grain(img, intensity, size):
 
 # ── Halation ──────────────────────────────────────────────────────────────────
 
-def _box_blur_axis(arr, radius, axis):
-    """One box-blur pass along an axis, O(n) in the image and independent of radius."""
-    np = _require_numpy()
-    if radius < 1:
-        return arr
-
-    moved = np.moveaxis(arr, axis, 0)
-    n = moved.shape[0]
-    padded = np.pad(moved, [(radius, radius)] + [(0, 0)] * (moved.ndim - 1), mode="edge")
-    cumulative = np.cumsum(padded, axis=0, dtype=np.float32)
-    zero = np.zeros((1,) + cumulative.shape[1:], dtype=np.float32)
-    cumulative = np.concatenate([zero, cumulative], axis=0)
-
-    window = 2 * radius + 1
-    out = (cumulative[window:window + n] - cumulative[:n]) / np.float32(window)
-    return np.moveaxis(out, 0, axis)
-
-
-def _gaussian_blur(arr, sigma):
-    """Float Gaussian blur, approximated by three box passes.
-
-    PIL cannot blur float images (mode "F" raises), and blurring through uint8
-    is what broke halation: a Gaussian spreads a highlight's energy over
-    ~sigma^2 px, so a small highlight's blurred peak fell below 1/255 and
-    rounded to zero. Three box passes converge on a Gaussian by the central
-    limit theorem — the same trick PIL uses internally, in float.
-    """
-    np = _require_numpy()
-    if sigma <= 0:
-        return arr
-
-    # Box width whose 3-pass variance matches the target Gaussian.
-    width = math.sqrt(12.0 * sigma * sigma / 3.0 + 1.0)
-    radius = max(1, int(round((width - 1) / 2.0)))
-
-    out = arr.astype(np.float32, copy=True)
-    for _ in range(3):
-        out = _box_blur_axis(out, radius, axis=0)
-        out = _box_blur_axis(out, radius, axis=1)
-    return out
-
-
 def add_halation(img, intensity, radius):
     """Highlights scatter through the emulsion, reflect off the base, re-expose the film.
 
@@ -289,7 +249,7 @@ def add_halation(img, intensity, radius):
 
     # Blur is linear, so the green bloom is just a scaled copy of the red one —
     # blurring it separately would double the work and buy nothing.
-    blurred_red = _gaussian_blur(red, float(radius))
+    blurred_red = gaussian_blur(red, float(radius))
 
     bloom = np.zeros_like(img)
     bloom[:, :, 0] = blurred_red
