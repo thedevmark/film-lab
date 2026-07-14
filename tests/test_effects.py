@@ -101,5 +101,110 @@ class TestHalation(unittest.TestCase):
         self.assertAlmostEqual(extent_large / extent_small, 2.0, delta=0.3)
 
 
+class TestGrain(unittest.TestCase):
+    def test_zero_intensity_is_identity(self):
+        img = np.full((32, 32, 3), 0.5, dtype=np.float32)
+
+        out = effects.add_grain(img, intensity=0.0, size=0.01)
+
+        np.testing.assert_allclose(out, img)
+
+    def test_grain_is_monochrome_not_chroma_speckle(self):
+        """Independent per-channel noise reads as a noisy sensor, not film.
+        The three channels must receive the SAME perturbation."""
+        img = np.full((64, 64, 3), 0.5, dtype=np.float32)
+
+        grain = effects.add_grain(img, intensity=0.2, size=0.02, seed=7) - img
+
+        np.testing.assert_allclose(grain[:, :, 0], grain[:, :, 1], atol=1e-6)
+        np.testing.assert_allclose(grain[:, :, 1], grain[:, :, 2], atol=1e-6)
+
+    def test_grain_peaks_in_the_midtones(self):
+        """The old weight (1 - luma*0.85) put maximum grain in the blacks."""
+        shadow = np.full((96, 96, 3), 0.05, dtype=np.float32)
+        midtone = np.full((96, 96, 3), 0.50, dtype=np.float32)
+        highlight = np.full((96, 96, 3), 0.97, dtype=np.float32)
+
+        def amplitude(img):
+            return float((effects.add_grain(img, 0.2, 0.02, seed=3) - img).std())
+
+        self.assertGreater(amplitude(midtone), amplitude(shadow))
+        self.assertGreater(amplitude(midtone), amplitude(highlight))
+
+    def test_is_deterministic_under_a_seed(self):
+        img = np.full((32, 32, 3), 0.5, dtype=np.float32)
+
+        a = effects.add_grain(img, 0.2, 0.02, seed=42)
+        b = effects.add_grain(img, 0.2, 0.02, seed=42)
+        c = effects.add_grain(img, 0.2, 0.02, seed=43)
+
+        np.testing.assert_allclose(a, b)
+        self.assertFalse(np.allclose(a, c))
+
+    def test_size_is_resolution_independent(self):
+        """`size` is a fraction of the short edge, so the same relative grain
+        BLOB SIZE should appear whether the frame is a preview or a full-res
+        export. Global amplitude (.std() over the whole field) is NOT a valid
+        proxy for this: add_grain renormalises the blurred noise field back to
+        unit variance, so the overall amplitude comes out ~identical regardless
+        of whether sigma actually scaled with resolution -- an amplitude-only
+        comparison would pass even if `size` were misread as a raw pixel count.
+        Instead, measure the spatial extent of a grain blob directly (mean
+        same-sign run length along rows), the same technique used for
+        halation's resolution-independence test, and require it to roughly
+        double when the frame doubles -- and to be well above one pixel to
+        begin with, so we are not comparing near-meaningless small numbers.
+        """
+        small = np.full((100, 150, 3), 0.5, dtype=np.float32)
+        large = np.full((200, 300, 3), 0.5, dtype=np.float32)
+
+        g_small = effects.add_grain(small, 0.2, size=0.05, seed=1) - small
+        g_large = effects.add_grain(large, 0.2, size=0.05, seed=1) - large
+
+        # Same relative grain size => similar global amplitude, not wildly
+        # different (a coarse sanity check; the real assertion is extent below).
+        self.assertAlmostEqual(float(g_small.std()), float(g_large.std()), delta=0.02)
+
+        def mean_run_length(channel):
+            """Average length, in pixels, of a same-sign run along each row."""
+            signs = np.sign(channel).astype(np.int8)
+            total_len = 0
+            total_runs = 0
+            for row in signs:
+                boundaries = np.flatnonzero(np.diff(row) != 0) + 1
+                run_lengths = np.diff(np.concatenate(([0], boundaries, [row.size])))
+                total_len += row.size
+                total_runs += run_lengths.size
+            return total_len / total_runs
+
+        extent_small = mean_run_length(g_small[:, :, 0])
+        extent_large = mean_run_length(g_large[:, :, 0])
+
+        # The grain blobs must be a substantial, multi-pixel feature -- not
+        # single-pixel iid noise -- before their extent means anything.
+        self.assertGreater(extent_small, 1.5)
+        self.assertGreater(extent_large, 1.5)
+
+        # And the extent, in pixels, must double along with the frame: the
+        # direct signature of sigma scaling with resolution rather than being
+        # a fixed pixel count.
+        self.assertAlmostEqual(extent_large / extent_small, 2.0, delta=0.5)
+
+    def test_absurd_size_does_not_explode(self):
+        img = np.full((64, 64, 3), 0.5, dtype=np.float32)
+
+        out = effects.add_grain(img, 0.05, size=1000.0, seed=1)
+
+        self.assertEqual(out.shape, img.shape)
+        self.assertTrue(np.all(np.isfinite(out)))
+
+    def test_output_stays_in_range(self):
+        img = np.full((64, 64, 3), 0.99, dtype=np.float32)
+
+        out = effects.add_grain(img, 0.5, 0.02, seed=1)
+
+        self.assertTrue(np.all((out >= 0.0) & (out <= 1.0)))
+
+
 if __name__ == "__main__":
     unittest.main()
