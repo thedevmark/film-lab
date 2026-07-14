@@ -45,6 +45,11 @@ PRESETS_FILE = APP_STATE_DIR / "film_presets.json"
 
 app = Flask(__name__, static_folder=str(INTERNAL_DIR / "static"))
 
+# Uploads are written to disk and then decoded and graded synchronously in the
+# request thread, holding several full-resolution float32 copies. Without a cap
+# the body size — and so the peak memory — is whatever the caller sends.
+app.config["MAX_CONTENT_LENGTH"] = 256 * 1024 * 1024
+
 
 @app.route("/")
 def index():
