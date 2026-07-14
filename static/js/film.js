@@ -13,7 +13,7 @@ const FilmLab = (() => {
         grade_strength:      0.85,
         exposure_bias:       0.00,
         contrast_strength:   0.00,
-        grain_intensity:     0.055,
+        grain_intensity:     0.018,
         grain_size:          0.0015,
         halation_intensity:  0.45,
         halation_radius:     0.010,
@@ -61,7 +61,7 @@ const FilmLab = (() => {
             param:   "grain_intensity",
             valueId: "film-grain-intensity-val",
             format:  v => `${Math.round(v * 100)}%`,
-            min: 0, max: 0.30, step: 0.005,
+            min: 0, max: 0.06, step: 0.002,
         },
         {
             id:      "film-grain-size",

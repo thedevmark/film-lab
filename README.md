@@ -70,9 +70,13 @@ grain         last — texture on a finished frame
 Contrast sits after the LUT because the CLUTs were authored against a neutral,
 standard-contrast render; look-contrast in front of them would be counted twice.
 
-LUTs are **bring-your-own** and live in `luts/` — see [luts/README.md](luts/README.md)
-and [docs/extracting-a-lut.md](docs/extracting-a-lut.md). With none installed the
-color stage is a no-op and everything else still runs. This repo will not
+**Kodak Gold 200 ships with the repo** (`luts/open/`), baked from
+[spektrafilm](https://github.com/andreavolpato/spektrafilm) — a spectral
+photochemical simulation built from measured datasheet density curves, not a
+hand-tuned approximation. So it works out of the box.
+
+You can add your own to `luts/private/`, which is gitignored — see
+[docs/extracting-a-lut.md](docs/extracting-a-lut.md). This repo will not
 redistribute profiles extracted from commercial software. If you own a licensed
 copy of an editor, extracting a LUT from it for your own use is your business;
 publishing that LUT is not something this project will do for you.
@@ -99,8 +103,18 @@ Still to come: batch — folder in, folder out, resumable.
 
 ## License
 
-Code is [MIT](LICENSE). Any LUTs or profiles you add carry their own licenses —
-check them.
+Code is [MIT](LICENSE).
+
+**One exception:** `luts/open/kodak_gold_200.png` is baked from
+[spektrafilm](https://github.com/andreavolpato/spektrafilm)'s measured film
+profile and is **[CC BY-SA 4.0](luts/open/LICENSE)**, not MIT — spektrafilm's
+license explicitly treats a LUT as a direct encoding of its profile data, so
+share-alike follows it. See [luts/open/ATTRIBUTION.md](luts/open/ATTRIBUTION.md),
+and [docs/baking-the-default-lut.md](docs/baking-the-default-lut.md) to reproduce it.
+
+Photographs you make with it are yours. No copyleft reaches your images.
+
+Any LUTs you add yourself carry their own licenses — check them.
 
 Film stock names are trademarks of their respective owners. Nothing here is
 affiliated with, endorsed by, or derived from Kodak, Fujifilm, or DxO.
