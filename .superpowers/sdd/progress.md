@@ -17,3 +17,4 @@ Task 8: complete (commit 02c3927 - THE ATOMIC SWAP. apply_film_color/_load_image
   Step 8 (visual A/B gate vs DxO finals) NOT RUN - needs a real Kodak Gold LUT + the user photo library. STILL OWED.
   Open: grey-point scale is a no-op with GREY_SCENE == GREY_DISPLAY == 0.18, so RAW gets no scene-to-display correction; awaiting the calibration constant Step 8 would reveal.
 Task 8: complete (commits 02c3927..08378e3 — ATOMIC SWAP: apply_film_color deleted, LUT pipeline live. 19-mutation review CAUGHT: get_lut negative-cached identity under the missing LUT's name (broke the extraction workflow + could fake a Step-8 failure); legacy pixel-unit presets clamped to MAXIMA on load; rolloff/grade_strength/seed wirings all untested. All fixed + pinned. 96 tests.)
+Task 9: complete (LUT baked + shipped; CAUGHT: spektrafilm default stops_above_midgray=4.0 lifts mid-grey 0.50->0.78; used 2.47. Grain retuned 0.055->0.018 (14 -> 4.6 levels).)

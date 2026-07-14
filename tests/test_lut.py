@@ -572,5 +572,81 @@ class TestApplyLutSixTetrahedraPartition(unittest.TestCase):
         self.assertTrue(np.all(total == 1), f"partition violated: counts={np.bincount(total)}")
 
 
+class TestShippedKodakGold200(unittest.TestCase):
+    """The one artifact this repo ships, pinned to its actual measured values.
+
+    Every other LUT test patches LUT_DIR to a temp directory and feeds it a
+    synthetic Hald, so nothing loaded the real file. Replacing it with solid
+    magenta left the suite green. DELETING it left the suite green — get_lut
+    falls back to an identity cube by design, and an identity LUT is
+    indistinguishable from "the film look is doing nothing", which is exactly
+    the failure a packaging miss or a truncated binary produces.
+
+    The numbers below are the ones documented in docs/baking-the-default-lut.md,
+    and are what the shipped file actually measures. Mid-grey is the load-bearing
+    one: spektrafilm's default stops_above_midgray (4.0) puts it at 0.78, over a
+    stop of brightening on every photograph. This file was baked at 2.47, which
+    puts it at 0.51.
+    """
+
+    PATH = Path(__file__).resolve().parent.parent / "luts" / "open" / "kodak_gold_200.png"
+
+    def setUp(self):
+        if not self.PATH.exists():
+            self.fail(f"the shipped LUT is missing: {self.PATH}")
+        self.cube = lut.load_hald(self.PATH)
+
+    def test_it_is_a_level_8_cube(self):
+        self.assertEqual(self.cube.shape, (64, 64, 64, 3))
+
+    def test_mid_grey_lands_where_the_pipeline_expects_it(self):
+        """~0.51, not ~0.78. This is the one that catches a wrong
+        stops_above_midgray bake."""
+        mid = self.cube[32, 32, 32]
+
+        for channel, value in zip("rgb", mid):
+            self.assertGreater(float(value), 0.48, f"mid-grey {channel} = {value}")
+            self.assertLess(float(value), 0.54, f"mid-grey {channel} = {value}")
+
+    def test_black_carries_the_film_base_fog(self):
+        """Film has no true black: the base is not perfectly clear."""
+        black = self.cube[0, 0, 0]
+
+        self.assertTrue(np.all(black > 0.02), f"black = {black}")
+        self.assertTrue(np.all(black < 0.09), f"black = {black}")
+
+    def test_white_sits_on_the_shoulder(self):
+        white = self.cube[-1, -1, -1]
+
+        self.assertTrue(np.all(white > 0.75), f"white = {white}")
+        self.assertTrue(np.all(white < 0.88), f"white = {white}")
+
+    def test_it_is_neither_an_identity_nor_a_wrong_table(self):
+        """One number that fails in both directions.
+
+        Too low and the file is missing, empty, or an identity — a shipped app
+        with no film look and no error. Too high and it is not this LUT at all
+        (solid magenta scores ~0.46).
+        """
+        deviation = float(np.abs(self.cube - lut.identity_cube(64)).mean())
+
+        self.assertGreater(deviation, 0.03, "the shipped LUT does nothing")
+        self.assertLess(deviation, 0.30, "the shipped LUT is not the baked Gold 200")
+
+    def test_it_is_the_lut_the_pipeline_actually_loads(self):
+        """The wiring, not just the file: the default preset's LUT name, resolved
+        through get_lut against the real luts/ directory, is this cube."""
+        import film
+
+        film._LUT_CACHE.clear()
+        try:
+            loaded = film.get_lut(film.DEFAULT_PARAMS["lut"])
+        finally:
+            film._LUT_CACHE.clear()
+
+        self.assertEqual(loaded.shape, self.cube.shape)
+        np.testing.assert_allclose(loaded, self.cube, atol=1e-6)
+
+
 if __name__ == "__main__":
     unittest.main()

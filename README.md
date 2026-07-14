@@ -57,9 +57,9 @@ The pipeline, in order:
 ```
 load -> (linear, scene|display)
 exposure      linear x 2**EV
-halation      linear, additive, red-dominant
 [if scene]    grey-point scale — neutral, no look
-rolloff       hue-preserving highlight compression
+halation      linear, additive, red-dominant
+highlights    scene: soft shoulder   display: hue-preserving clip
 srgb encode   + clip to [0,1]
 LUT           tetrahedral, strength blend
 contrast      post-LUT user finish, 0 in every preset
@@ -67,8 +67,26 @@ grain         last — texture on a finished frame
 -> JPEG
 ```
 
+The **highlight** stage is the one place the scene/display tag changes the
+render, and the two states need opposite things. A RAW is scene-linear, with real
+headroom above 1.0 that nothing has rendered yet — it needs a soft shoulder, and
+that shoulder *is* the scene-to-display render. A JPEG has already been rendered
+by the camera: at EV=0 nothing in it exceeds 1.0, so the correct transform is the
+**identity**, and there is no gentler option — any monotonic map that is the
+identity on [0,1] and lands in [0,1] *is* `min(x, 1)`. Only an exposure push can
+send a JPEG over 1.0, and those values come back down by scaling the whole
+triplet rather than clipping each channel, so hue survives. A shoulder here would
+crush white to grey and stack a second tone curve in front of the LUT.
+
+The grey-point scale runs *before* halation because halation's threshold and the
+shoulder's knee are both absolute linear values: they have to see one exposure.
+
 Contrast sits after the LUT because the CLUTs were authored against a neutral,
 standard-contrast render; look-contrast in front of them would be counted twice.
+
+Grain is seeded from a hash of the input file, so a photo renders identically
+every time while no two photos in a shoot share a noise field. An explicit
+non-zero `seed` overrides that.
 
 **Kodak Gold 200 ships with the repo** (`luts/open/`), baked from
 [spektrafilm](https://github.com/andreavolpato/spektrafilm) — a spectral

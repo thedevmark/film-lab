@@ -24,21 +24,25 @@ def _solid_hald(path: Path, colour):
 class TestPipeline(unittest.TestCase):
     def setUp(self):
         film._LUT_CACHE.clear()
+        self.tmp = tempfile.TemporaryDirectory()
 
     def tearDown(self):
         film._LUT_CACHE.clear()
+        self.tmp.cleanup()
 
-    def test_pipeline_runs_in_the_documented_order(self):
-        """Every stage of the pipeline is recorded here, and the params that
-        reach them are captured.
+    def _file(self, name: str, content: bytes = b"bytes on disk") -> Path:
+        """A real file at a real path.
 
-        The rolloff, grade_strength and seed are all in this test because each
-        of them could be deleted, hardcoded or ignored without a single test
-        failing: the order list only pinned the stages it happened to name, and
-        nothing looked at what the stages were called WITH.
+        process_photo hashes the input file to derive the grain seed, so the
+        path has to exist even in a test that patches load_image — which is what
+        the pipeline is always handed in production anyway.
         """
-        from filmlab import loader
+        path = Path(self.tmp.name) / name
+        path.write_bytes(content)
+        return path
 
+    def _record_stages(self, state, params):
+        """Run process_photo with every stage recorded, for one input state."""
         order = []
         seen = {}
         source = np.full((8, 8, 3), 0.25, dtype=np.float32)
@@ -57,34 +61,50 @@ class TestPipeline(unittest.TestCase):
             seen["seed"] = kwargs.get("seed")
             return img
 
+        suffix = ".arw" if state == "scene" else ".jpg"
         with patch.object(film, "load_image",
-                          return_value=(source.copy(), loader.DISPLAY)), \
+                          return_value=(source.copy(), state)), \
              patch.object(film, "apply_exposure",
                           side_effect=record("exposure", lambda img, ev: img)), \
              patch.object(film, "add_halation",
                           side_effect=record("halation", lambda img, **k: img)), \
              patch.object(film, "highlight_rolloff",
                           side_effect=record("rolloff", lambda img: img)), \
+             patch.object(film, "hue_preserving_clip",
+                          side_effect=record("clip", lambda img: img)), \
              patch.object(film, "apply_lut",
                           side_effect=record("lut", lut)), \
              patch.object(film, "apply_contrast",
                           side_effect=record("contrast", lambda img, strength: img)), \
              patch.object(film, "add_grain",
                           side_effect=record("grain", grain)):
-            out = film.process_photo(Path("x.jpg"), {
-                "grain_intensity": 0.05,
-                "grade_strength": 0.25,
-                "seed": 4321,
-            })
+            out = film.process_photo(self._file(f"x{suffix}"), params)
 
-        # The rolloff is BEFORE the sRGB encode and its clip: it exists to catch
-        # what the exposure push sent past 1.0 without the hue rotation a
-        # per-channel clip would inflict. Contrast is AFTER the LUT: the CLUTs
-        # were authored against a neutral, standard-contrast render, so
-        # look-contrast before them is counted twice. Grain is LAST: it is the
-        # texture on a finished frame, not a signal that gets graded.
+        return order, seen, out
+
+    def test_pipeline_runs_in_the_documented_order(self):
+        """Every stage of the pipeline is recorded here, and the params that
+        reach them are captured.
+
+        The highlight transform, grade_strength and seed are all in this test
+        because each of them could be deleted, hardcoded or ignored without a
+        single test failing: the order list only pinned the stages it happened to
+        name, and nothing looked at what the stages were called WITH.
+        """
+        from filmlab import loader
+
+        params = {"grain_intensity": 0.05, "grade_strength": 0.25, "seed": 4321}
+        order, seen, out = self._record_stages(loader.DISPLAY, params)
+
+        # A JPEG is already camera-rendered, so the highlight stage is a
+        # hue-preserving CLIP — the identity in range. A shoulder here would be a
+        # second tone curve in front of the LUT, and would make white unreachable.
+        # Contrast is AFTER the LUT: the CLUTs were authored against a neutral,
+        # standard-contrast render, so look-contrast before them is counted twice.
+        # Grain is LAST: it is the texture on a finished frame, not a signal that
+        # gets graded.
         self.assertEqual(
-            order, ["exposure", "halation", "rolloff", "lut", "contrast", "grain"]
+            order, ["exposure", "halation", "clip", "lut", "contrast", "grain"]
         )
 
         # grade_strength is the headline control of the whole feature, and seed
@@ -98,6 +118,121 @@ class TestPipeline(unittest.TestCase):
         decoded = Image.open(io.BytesIO(out))
         self.assertEqual(decoded.format, "JPEG")
         self.assertEqual(decoded.size, (8, 8))
+
+    def test_scene_input_gets_the_shoulder_and_display_input_does_not(self):
+        """The state tag exists to pick the highlight transform, and this is the
+        only place the choice is visible.
+
+        SCENE is scene-linear with real headroom above 1.0, so the soft shoulder
+        IS its scene-to-display render. DISPLAY has already been rendered by the
+        camera; a shoulder there would crush white and stack a second tone curve
+        in front of the LUT.
+        """
+        from filmlab import loader
+
+        params = {"grain_intensity": 0.0, "seed": 1}
+
+        scene_order, _, _ = self._record_stages(loader.SCENE, params)
+        display_order, _, _ = self._record_stages(loader.DISPLAY, params)
+
+        self.assertIn("rolloff", scene_order)
+        self.assertNotIn("clip", scene_order)
+
+        self.assertIn("clip", display_order)
+        self.assertNotIn("rolloff", display_order)
+
+    def test_pure_white_survives_the_zeroed_pipeline(self):
+        """With every control at zero, a white wall must come out white.
+
+        The shoulder used to run on both states. It is asymptotic to 1.0, so
+        f(1.0) = 0.926 in linear light, and 255 came out of the JPEG as 246 with
+        the top 21 code values squashed into 13. Every photo with a blown sky or
+        a white wall rendered it light grey, at every setting, with no way to
+        turn it off. It also made the LUT's own calibration point — encoded 1.0,
+        which is what stops_above_midgray=2.47 was baked against — unreachable.
+        """
+        source = Path(self.tmp.name) / "white.jpg"
+        Image.new("RGB", (16, 16), (255, 255, 255)).save(source, quality=95)
+
+        with patch.object(film, "LUT_DIR", Path(self.tmp.name) / "no-luts"):
+            out = film.process_photo(source, {
+                "lut":                "nothing_installed",
+                "grade_strength":     0.0,
+                "exposure_bias":      0.0,
+                "contrast_strength":  0.0,
+                "grain_intensity":    0.0,
+                "halation_intensity": 0.0,
+            })
+
+        decoded = np.asarray(Image.open(io.BytesIO(out)), dtype=np.int16)
+        self.assertEqual(int(decoded.min()), 255,
+                         f"white came back as {int(decoded.min())}, not 255")
+
+    def test_the_zeroed_display_pipeline_is_an_identity(self):
+        """Not just white: with every control at zero and no LUT, a JPEG in must
+        be the same JPEG out, to within JPEG quantisation. The pre-LUT image is
+        supposed to be a neutral, standard-contrast sRGB render — the very space
+        the CLUT was authored against — and any tone curve on this path is one
+        the LUT will then count twice."""
+        source = Path(self.tmp.name) / "ramp.jpg"
+        # A ramp that reaches both 0 and 255 on every channel — the top of the
+        # range is exactly where the shoulder did its damage.
+        axis = (np.arange(32) * 255 // 31).astype(np.uint8)
+        ramp = np.stack([
+            np.repeat(axis[:, None], 32, axis=1),
+            np.repeat(axis[None, :], 32, axis=0),
+            np.repeat(axis[::-1, None], 32, axis=1),
+        ], axis=-1)
+        Image.fromarray(ramp).save(source, quality=95)
+        original = np.asarray(Image.open(source), dtype=np.int16)
+
+        with patch.object(film, "LUT_DIR", Path(self.tmp.name) / "no-luts"):
+            out = film.process_photo(source, {
+                "lut":                "nothing_installed",
+                "grade_strength":     0.0,
+                "exposure_bias":      0.0,
+                "contrast_strength":  0.0,
+                "grain_intensity":    0.0,
+                "halation_intensity": 0.0,
+            })
+
+        decoded = np.asarray(Image.open(io.BytesIO(out)), dtype=np.int16)
+        delta = np.abs(decoded - original)
+        self.assertLessEqual(int(delta.max()), 6,
+                             f"zeroed pipeline moved a pixel by {int(delta.max())} levels")
+        self.assertLess(float(delta.mean()), 2.0)
+
+    def test_grey_point_scale_runs_before_halation(self):
+        """HALATION_THRESHOLD (0.70) and the rolloff knee (0.8) are both ABSOLUTE
+        linear values. If the grey-point scale sits between them, the same RAW
+        highlight is tested for halation at one exposure and rolled off at
+        another. Masked today only because GREY_DISPLAY / GREY_SCENE happens to
+        be 1.0."""
+        from filmlab import loader
+
+        source = np.full((4, 4, 3), 0.25, dtype=np.float32)
+        seen = {}
+
+        def halation(img, **kwargs):
+            seen["halation_in"] = float(np.asarray(img, dtype=np.float32).mean())
+            return img
+
+        def rolloff(img):
+            seen["rolloff_in"] = float(np.asarray(img, dtype=np.float32).mean())
+            return img
+
+        # Scene grey at 0.36 => the scale to a 0.18 display grey is a halving.
+        with patch.object(film, "GREY_SCENE", 0.36), \
+             patch.object(film, "load_image",
+                          return_value=(source.copy(), loader.SCENE)), \
+             patch.object(film, "add_halation", side_effect=halation), \
+             patch.object(film, "highlight_rolloff", side_effect=rolloff):
+            film.process_photo(self._file("x.arw"), {"grain_intensity": 0.0})
+
+        # Both absolute thresholds must see the SAME exposure.
+        self.assertAlmostEqual(seen["halation_in"], 0.125, places=5,
+                               msg="halation ran before the grey-point scale")
+        self.assertAlmostEqual(seen["rolloff_in"], 0.125, places=5)
 
     def test_blown_highlights_keep_their_hue_through_the_whole_pipeline(self):
         """The unmocked half of the rolloff's wiring.
@@ -120,7 +255,7 @@ class TestPipeline(unittest.TestCase):
 
         with patch.object(film, "load_image",
                           return_value=(linear.copy(), loader.DISPLAY)):
-            out = film.process_photo(Path("x.jpg"), {
+            out = film.process_photo(self._file("x.jpg"), {
                 # Only the tone path under test: no LUT, no grain, no halation.
                 "grade_strength": 0.0,
                 "halation_intensity": 0.0,
@@ -161,7 +296,7 @@ class TestPipeline(unittest.TestCase):
         with patch.object(film, "load_image",
                           return_value=(source.copy(), loader.DISPLAY)), \
              patch.object(film, "apply_lut", side_effect=capture):
-            film.process_photo(Path("x.jpg"), {
+            film.process_photo(self._file("x.jpg"), {
                 "halation_intensity": 0.0,
                 "grain_intensity": 0.0,
             })
@@ -191,10 +326,10 @@ class TestPipeline(unittest.TestCase):
              patch.object(film, "apply_lut", side_effect=capture):
             with patch.object(film, "load_image",
                               return_value=(source.copy(), loader.DISPLAY)):
-                film.process_photo(Path("x.jpg"), params)
+                film.process_photo(self._file("x.jpg"), params)
             with patch.object(film, "load_image",
                               return_value=(source.copy(), loader.SCENE)):
-                film.process_photo(Path("x.arw"), params)
+                film.process_photo(self._file("x.arw"), params)
 
         display_value, scene_value = seen
         np.testing.assert_allclose(display_value, float(srgb_encode(np.float32(0.25))),
@@ -237,6 +372,106 @@ class TestPipeline(unittest.TestCase):
     def test_apply_film_color_is_gone(self):
         self.assertFalse(hasattr(film, "apply_film_color"),
                          "the hand-tuned colour maths should have been deleted")
+
+
+class TestGrainSeed(unittest.TestCase):
+    """seed = 0 is the "auto" sentinel, and auto means derived from the FILE.
+
+    It used to mean literally zero: nothing in DEFAULT_PARAMS, the presets or the
+    UI ever set it, so np.random.default_rng(0) drew the same field for every
+    photo. Two photos of the same dimensions got bit-identical grain — fixed
+    pattern noise across a whole shoot, plainly visible once the set is viewed
+    together.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        film._LUT_CACHE.clear()
+
+    def tearDown(self):
+        film._LUT_CACHE.clear()
+        self.tmp.cleanup()
+
+    BASE = {
+        "lut":                "nothing_installed",
+        "grade_strength":     0.0,
+        "halation_intensity": 0.0,
+        "grain_intensity":    0.05,
+        "grain_size":         0.001,  # sigma < 0.5px: the raw draw, unblurred
+    }
+
+    def _grain_field(self, source: Path, params=None):
+        """The grain the pipeline lays on `source`, isolated by subtracting the
+        same render with grain switched off."""
+        base = {**self.BASE, **(params or {})}
+
+        with patch.object(film, "LUT_DIR", self.dir / "no-luts"):
+            grainy = film.process_photo(source, base)
+            clean = film.process_photo(source, {**base, "grain_intensity": 0.0})
+
+        a = np.asarray(Image.open(io.BytesIO(grainy)), dtype=np.float32)
+        b = np.asarray(Image.open(io.BytesIO(clean)), dtype=np.float32)
+        return a - b
+
+    def _seed_reaching_grain(self, source: Path, params=None):
+        seen = {}
+
+        def grain(img, **kwargs):
+            seen["seed"] = kwargs.get("seed")
+            return img
+
+        with patch.object(film, "LUT_DIR", self.dir / "no-luts"), \
+             patch.object(film, "add_grain", side_effect=grain):
+            film.process_photo(source, {**self.BASE, **(params or {})})
+        return seen["seed"]
+
+    def _photo(self, name: str, colour) -> Path:
+        path = self.dir / name
+        Image.new("RGB", (32, 32), colour).save(path, quality=95)
+        return path
+
+    def test_two_photos_do_not_share_one_grain_field(self):
+        first = self._grain_field(self._photo("a.jpg", (128, 128, 128)))
+        second = self._grain_field(self._photo("b.jpg", (127, 128, 129)))
+
+        # Same size, same settings, different FILE — so a different field.
+        self.assertEqual(first.shape, second.shape)
+        self.assertGreater(float(np.abs(first - second).mean()), 1.0,
+                           "two different photos got the same grain field")
+
+    def test_the_same_photo_twice_gets_the_same_grain(self):
+        source = self._photo("a.jpg", (128, 128, 128))
+
+        first = self._grain_field(source)
+        second = self._grain_field(source)
+
+        np.testing.assert_array_equal(first, second)
+
+    def test_an_explicit_seed_still_wins(self):
+        """Reproducibility is not negotiable: a non-zero seed overrides the file
+        hash, so two different photos rendered with the same explicit seed get
+        the same field."""
+        a = self._photo("a.jpg", (128, 128, 128))
+        b = self._photo("b.jpg", (200, 40, 60))
+
+        self.assertEqual(self._seed_reaching_grain(a, {"seed": 99}), 99)
+        self.assertEqual(self._seed_reaching_grain(b, {"seed": 99}), 99)
+
+        # ...and with the sentinel, the seed that reaches the grain is the file's.
+        self.assertEqual(self._seed_reaching_grain(a), film._seed_from_file(a))
+        self.assertNotEqual(self._seed_reaching_grain(a),
+                            self._seed_reaching_grain(b))
+
+    def test_the_derived_seed_is_in_range_and_stable(self):
+        source = self._photo("a.jpg", (128, 128, 128))
+
+        seed = film._seed_from_file(source)
+
+        self.assertIsInstance(seed, int)
+        self.assertGreaterEqual(seed, 0)
+        self.assertEqual(seed, film._seed_from_file(source))
+        self.assertNotEqual(seed, film._seed_from_file(self._photo("b.jpg", (10, 20, 30))))
 
 
 class TestLutSelection(unittest.TestCase):
@@ -334,13 +569,13 @@ class TestParams(unittest.TestCase):
             self.assertIn(key, clean)
         self.assertEqual(clean["lut"], "kodak_gold_200")
 
-    def test_grain_size_and_halation_radius_are_fractions_now(self):
-        clean = film.coerce_params({"grain_size": 3, "halation_radius": 38})
-
-        # The old pixel-valued sliders must clamp into the fraction range rather
-        # than being taken at face value.
-        self.assertLessEqual(clean["grain_size"], 0.05)
-        self.assertLessEqual(clean["halation_radius"], 0.10)
+    # A test asserting that coerce_params({"grain_size": 3}) yields <= 0.05 used
+    # to live here. It was vacuous: the clamp makes that true for ANY input, and
+    # the value it was passing lands exactly ON the maximum — which is the precise
+    # disaster _migrate_legacy_units exists to prevent, asserted as if it were the
+    # desired outcome. TestLegacyPresetUnits below pins the real behaviour (v1
+    # pixel values fall back to the DEFAULTS, not the maxima), and
+    # test_defects.TestParamValidation pins the boundary clamp itself.
 
     def test_exposure_bias_is_ev_stops(self):
         self.assertEqual(film.coerce_params({"exposure_bias": -3.0})["exposure_bias"], -3.0)

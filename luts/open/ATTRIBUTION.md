@@ -8,7 +8,10 @@ spectral sensitivities, not a hand-tuned approximation.
 
 - **Author:** Andrea Volpato
 - **Source:** <https://github.com/andreavolpato/spektrafilm>
-- **License:** [CC BY-SA 4.0](LICENSE)
+- **License:** CC BY-SA 4.0 — the authoritative notice is
+  [SPEKTRAFILM_LICENSE.txt](SPEKTRAFILM_LICENSE.txt), reproduced verbatim from
+  upstream and shipped alongside the LUT. [LICENSE](LICENSE) in this directory
+  points at it and adds nothing to it.
 - **Modified:** yes — see below.
 
 ### What was changed
@@ -51,5 +54,19 @@ A LUT baked from a profile is therefore that profile's data in a different
 container, and it carries the profile's license. So this directory is a
 per-directory license carve-out: **CC BY-SA 4.0, with attribution, share-alike.**
 
-**Photographs you make with it are yours.** No copyleft reaches your images —
-only the LUT file itself and anything that re-encodes the same table.
+That quotation is an excerpt, and an excerpt is not a license. The terms that
+bind are the ones in [SPEKTRAFILM_LICENSE.txt](SPEKTRAFILM_LICENSE.txt) — shipped
+in this directory, verbatim from upstream, and authoritative over anything
+written here or in [LICENSE](LICENSE). It carries terms no summary of it did:
+a restriction on use of the spektrafilm name, a request regarding commercial AI
+training, and the fact that removing the attribution ends the grant immediately.
+
+### Film Lab's reading (ours, not Andrea's)
+
+**Photographs you make with the LUT are yours.** No copyleft reaches your images
+— only the LUT file itself and anything that re-encodes the same table.
+
+That is this project's reading of the grant, stated here rather than in LICENSE
+because it is an interpretation and not a term. The upstream notice says much the
+same in its own words ("The works you make are yours, completely"); where the two
+differ, the upstream notice is what counts.

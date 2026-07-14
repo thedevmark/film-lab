@@ -1,38 +1,28 @@
 Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
 
 The contents of this directory are licensed under CC BY-SA 4.0. This is NOT the
-MIT license that covers the rest of this repository. See ATTRIBUTION.md for who
-made what, and why this exception exists.
+MIT license that covers the rest of this repository.
 
-Full legal code:  https://creativecommons.org/licenses/by-sa/4.0/legalcode
-Human summary:    https://creativecommons.org/licenses/by-sa/4.0/
+  The authoritative notice is SPEKTRAFILM_LICENSE.txt, shipped verbatim
+  alongside this file. Read that, not this.
 
-You are free to:
+`kodak_gold_200.png` is baked from spektrafilm's `kodak_gold_200` profile, by
+Andrea Volpato (<https://github.com/andreavolpato/spektrafilm>). spektrafilm's
+license treats a LUT as a direct encoding of its profile data, so the profile's
+license comes with it — including the requirement that this notice travel with
+every copy and every derivative.
 
-  Share  — copy and redistribute the material in any medium or format
-  Adapt  — remix, transform, and build upon the material for any purpose,
-           including commercially
+This file does not restate, summarise or interpret that grant. An earlier
+version of it did, and a summary of someone else's license is not their license:
+it omitted terms they wrote deliberately, among them a trademark restriction on
+the spektrafilm name, a request regarding commercial AI training, and the fact
+that removing attribution terminates the grant outright.
 
-Under the following terms:
+  Verbatim upstream notice:  SPEKTRAFILM_LICENSE.txt (in this directory)
+  CC BY-SA 4.0 legal code:   https://creativecommons.org/licenses/by-sa/4.0/legalcode
+  Human-readable summary:    https://creativecommons.org/licenses/by-sa/4.0/
 
-  Attribution — You must give appropriate credit, provide a link to the
-    license, and indicate if changes were made. You may do so in any reasonable
-    manner, but not in any way that suggests the licensor endorses you or your
-    use.
-
-  ShareAlike — If you remix, transform, or build upon the material, you must
-    distribute your contributions under the same license as the original.
-
-  No additional restrictions — You may not apply legal terms or technological
-    measures that legally restrict others from doing anything the license
-    permits.
-
-Notices:
-
-  The licensor offers the material as-is and makes no representations or
-  warranties of any kind concerning the material, whether express, implied,
-  statutory, or other.
-
-  Photographs you produce BY APPLYING these LUTs are your own work. ShareAlike
-  does not reach the images you make with them — only the LUT files themselves,
-  and anything derived from them that encodes the same information.
+For what was changed in the bake, why this directory is a license carve-out, and
+Film Lab's own reading of what share-alike does and does not reach, see
+ATTRIBUTION.md. That reading is Film Lab's, and is not part of anyone else's
+license grant.

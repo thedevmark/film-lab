@@ -17,7 +17,7 @@ const FilmLab = (() => {
         grain_size:          0.0015,
         halation_intensity:  0.45,
         halation_radius:     0.010,
-        seed:                0,
+        seed:                0,  // 0 == auto: the server derives it from the file
     };
 
     let currentParams = { ...DEFAULT_PARAMS };

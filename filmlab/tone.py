@@ -35,13 +35,47 @@ def srgb_encode(x):
     ).astype(np.float32)
 
 
-def highlight_rolloff(rgb, knee: float = 0.8):
-    """Compress values above the knee into [0,1] without rotating hue.
+def hue_preserving_clip(rgb):
+    """Bring over-range values into [0,1] by scaling, not clipping. DISPLAY only.
 
-    A per-channel clip crushes channels in sequence — the brightest channel of a
-    warm specular reaches 1.0 first and the highlight drifts toward yellow-white
-    on its way out. Compressing the *norm* and scaling the whole triplet by the
-    same factor preserves the channel ratios, and so the hue.
+    A camera JPEG has already been rendered: at EV=0 nothing in it exceeds 1.0,
+    and the LUT downstream was authored against exactly that sRGB space. So the
+    only correct transform in front of the LUT is the IDENTITY — and there is no
+    softer alternative available. Any monotonic f that is the identity on [0,1]
+    and maps [0,inf) into [0,1] IS min(x, 1): f must fix 1.0, and monotonicity
+    then pins everything above it at 1.0. A soft shoulder is only correct where
+    the input is scene-linear, which is what `highlight_rolloff` below is for.
+
+    That leaves only the question of HOW the over-range values an exposure push
+    creates come back down. Clipping each channel on its own crushes them in
+    sequence — the brightest channel of a warm specular reaches 1.0 first and the
+    highlight drifts toward yellow-white on its way out. Dividing the whole
+    triplet by its own maximum preserves the channel ratios, and so the hue.
+    """
+    rgb = np.asarray(rgb, dtype=np.float32)
+
+    # Pointwise, per pixel: the max is over the CHANNEL axis alone. (An earlier
+    # transform in this file took a cumulative max across the flattened image,
+    # so one bright pixel dimmed every pixel after it in raster order.)
+    norm = np.max(rgb, axis=-1, keepdims=True)
+
+    # >= 1.0 everywhere, so the divide is always safe: below range this is a
+    # divide by exactly 1.0 — the identity, bit for bit.
+    scale = np.where(norm > np.float32(1.0), norm, np.float32(1.0))
+
+    return (rgb / scale).astype(np.float32)
+
+
+def highlight_rolloff(rgb, knee: float = 0.8):
+    """The scene-to-display shoulder. SCENE (scene-linear) input only.
+
+    Scene-linear light has real headroom above 1.0 that has never been rendered
+    by anything, so it needs a shoulder — that shoulder IS the scene-to-display
+    render. It must NOT run on a camera JPEG: this curve is asymptotic to 1.0,
+    so f(1.0) = 0.926 and white can never come out white.
+
+    Compresses the *norm* and scales the whole triplet by the same factor, so a
+    warm specular keeps its channel ratios, and so its hue, on the way down.
 
     The curve is asymptotic to 1.0, C1 at the knee, and monotonic.
     """

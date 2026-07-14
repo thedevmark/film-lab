@@ -1,7 +1,9 @@
 """Halation and grain.
 
-Both operate on a fraction of the long edge rather than a pixel count, so the
-look does not change between a downscaled preview and a full-resolution export.
+Both are sized as a fraction of an edge rather than as a pixel count, so the look
+does not change between a downscaled preview and a full-resolution export.
+Halation's radius is a fraction of the LONG edge; grain's size is a fraction of
+the SHORT edge.
 """
 
 from __future__ import annotations

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
@@ -18,7 +19,7 @@ from flask import request, jsonify, send_file
 from filmlab.effects import add_grain, add_halation
 from filmlab.loader import IMAGE_EXTENSIONS, RAW_EXTENSIONS, SCENE, load_image
 from filmlab.lut import apply_lut, identity_cube, load_hald
-from filmlab.tone import highlight_rolloff, srgb_encode
+from filmlab.tone import highlight_rolloff, hue_preserving_clip, srgb_encode
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ DEFAULT_PARAMS = {
     "grain_size":         0.0015,
     "halation_intensity": 0.45,
     "halation_radius":    0.010,
-    "seed":               0,
+    "seed":               0,   # 0 == auto: derive it from the file. See _seed_from_file.
 }
 
 
@@ -187,15 +188,62 @@ def apply_contrast(rgb, strength: float):
     return np.clip(0.5 + (rgb - 0.5) * np.float32(1.0 + strength), 0.0, 1.0)
 
 
+# ── Grain seed ────────────────────────────────────────────────────────────────
+
+def _seed_from_file(input_path: Path) -> int:
+    """Derive a grain seed from the input file's bytes.
+
+    seed=0 is the "auto" sentinel, and it used to mean literally zero: nothing in
+    DEFAULT_PARAMS, the presets or the UI ever set it, so every photo of a given
+    size drew the SAME noise field. That is fixed-pattern noise across a whole
+    shoot — invisible in one frame and obvious the moment the set is viewed
+    together.
+
+    Hashing the file keeps both properties that matter: a photo renders the same
+    way every time (so a re-export matches the preview), and no two photos share
+    a field. An explicit non-zero seed still overrides this.
+    """
+    digest = hashlib.blake2b(input_path.read_bytes(), digest_size=4).digest()
+    return int.from_bytes(digest, "big")
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 def process_photo(input_path: Path, params: dict) -> bytes:
-    """load -> exposure -> halation -> render -> LUT -> contrast -> grain -> JPEG."""
+    """load -> exposure -> [if scene] grey-point scale -> halation -> highlights
+    -> encode -> LUT -> contrast -> grain -> JPEG.
+
+    The highlight stage is where the state tag earns its keep, and the two states
+    need opposite things:
+
+      SCENE (a RAW) is scene-linear, with real headroom above 1.0 that nothing
+      has rendered yet. It needs a soft shoulder — that shoulder IS the
+      scene-to-display render.
+
+      DISPLAY (a JPEG) has already been rendered by the camera. At EV=0 nothing
+      in it exceeds 1.0, so the correct transform is the IDENTITY: the LUT must
+      receive exactly the sRGB space it was authored against, and a shoulder here
+      is a second tone curve in front of it. Only an exposure push can send
+      values over 1.0, and those come back down with a hue-preserving clip.
+    """
     params = coerce_params(params)
 
     linear, state = load_image(input_path)
 
     linear = apply_exposure(linear, params["exposure_bias"])
+
+    if state == SCENE:
+        # Land scene middle grey where the CLUTs expect it. This is the whole of
+        # the scene-to-display exposure mapping: no look, no contrast curve. The
+        # CLUTs were authored against a neutral render, and anything opinionated
+        # here would be counted twice.
+        #
+        # BEFORE halation, not after: HALATION_THRESHOLD (0.70 linear) and the
+        # rolloff knee (0.8 linear) are both ABSOLUTE values, so they have to see
+        # the same exposure. With the scale between them, one RAW highlight would
+        # be tested for halation at one exposure and rolled off at another.
+        linear = linear * np.float32(GREY_DISPLAY / GREY_SCENE)
+
     linear = add_halation(
         linear,
         intensity=params["halation_intensity"],
@@ -203,16 +251,14 @@ def process_photo(input_path: Path, params: dict) -> bytes:
     )
 
     if state == SCENE:
-        # Land scene middle grey where the CLUTs expect it. This is the whole of
-        # the scene-to-display render: no look, no contrast curve. The CLUTs were
-        # authored against a neutral render, and anything opinionated here would
-        # be counted twice.
-        linear = linear * np.float32(GREY_DISPLAY / GREY_SCENE)
+        linear = highlight_rolloff(linear)
+    else:
+        linear = hue_preserving_clip(linear)
 
-    # Both branches: catch whatever the exposure push sent past 1.0, without
-    # rotating hue the way a per-channel clip would.
-    linear = highlight_rolloff(linear)
-
+    # Both branches already land in [0,1], so this clip is not shaping anything —
+    # it is float32 hygiene. srgb_encode's power function can return 1.0 plus an
+    # ULP at the top of the range, and uint8 conversion downstream is unforgiving
+    # about it. The tone decision was made above, deliberately, per state.
     rgb = np.clip(srgb_encode(linear), 0.0, 1.0)
 
     rgb = apply_lut(rgb, get_lut(params["lut"]), strength=params["grade_strength"])
@@ -221,14 +267,19 @@ def process_photo(input_path: Path, params: dict) -> bytes:
     # twice. Grain is after contrast: it is the texture the emulsion leaves on a
     # finished frame, not a signal that gets graded.
     rgb = apply_contrast(rgb, params["contrast_strength"])
+    seed = params["seed"] or _seed_from_file(input_path)
     rgb = add_grain(
         rgb,
         intensity=params["grain_intensity"],
         size=params["grain_size"],
-        seed=params["seed"],
+        seed=seed,
     )
 
-    pil_out = Image.fromarray((rgb * 255).clip(0, 255).astype("uint8"))
+    # ROUND, don't truncate. astype("uint8") floors, which biases every pixel
+    # down by half a level and — the reason it matters here — throws away the top
+    # code value outright: a float32 sRGB decode/encode round trip of pure white
+    # lands a hair under 1.0, and 254.99998 floors to 254. White has to stay 255.
+    pil_out = Image.fromarray(np.rint(rgb * 255.0).clip(0, 255).astype(np.uint8))
     buf = io.BytesIO()
     pil_out.save(buf, format="JPEG", quality=95)
     buf.seek(0)
