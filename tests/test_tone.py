@@ -56,5 +56,42 @@ class TestGaussianBlur(unittest.TestCase):
         self.assertGreater(len(np.unique(np.round(out, 6))), 100)
 
 
+class TestHighlightRolloff(unittest.TestCase):
+    def test_below_knee_is_untouched(self):
+        rgb = np.array([[[0.1, 0.2, 0.3]]], dtype=np.float32)
+
+        out = tone.highlight_rolloff(rgb, knee=0.8)
+
+        np.testing.assert_allclose(out, rgb, atol=1e-6)
+
+    def test_output_never_exceeds_one(self):
+        rgb = np.array([[[8.0, 4.0, 2.0], [100.0, 100.0, 100.0]]], dtype=np.float32)
+
+        out = tone.highlight_rolloff(rgb, knee=0.8)
+
+        self.assertTrue(np.all(out <= 1.0 + 1e-6))
+        self.assertTrue(np.all(out >= 0.0))
+
+    def test_hue_is_preserved_through_the_shoulder(self):
+        """A per-channel clip would rotate this toward yellow-white. Ratios must hold."""
+        rgb = np.array([[[4.0, 2.0, 1.0]]], dtype=np.float32)
+
+        out = tone.highlight_rolloff(rgb, knee=0.8)[0, 0]
+
+        # Input ratios are 4 : 2 : 1. They must survive.
+        self.assertAlmostEqual(float(out[0] / out[1]), 2.0, places=4)
+        self.assertAlmostEqual(float(out[1] / out[2]), 2.0, places=4)
+
+    def test_is_monotonic_and_continuous_at_the_knee(self):
+        ramp = np.linspace(0.0, 6.0, 2000, dtype=np.float32)
+        rgb = np.stack([ramp, ramp, ramp], axis=-1)[None, :, :]
+
+        out = tone.highlight_rolloff(rgb, knee=0.8)[0, :, 0]
+
+        self.assertTrue(np.all(np.diff(out) >= -1e-7), "rolloff must be monotonic")
+        # No step at the knee: the largest jump should be tiny.
+        self.assertLess(float(np.abs(np.diff(out)).max()), 0.01)
+
+
 if __name__ == "__main__":
     unittest.main()
