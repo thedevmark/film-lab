@@ -101,6 +101,108 @@ class TestHalation(unittest.TestCase):
         self.assertAlmostEqual(extent_large / extent_small, 2.0, delta=0.3)
 
 
+class TestWhichEdgeEachSizeKeysOff(unittest.TestCase):
+    """Grain keys off the SHORT edge; halation keys off the LONG edge.
+
+    The resolution-independence tests above and below cannot see this: they
+    compare (200,300) against (400,600), where BOTH dimensions scale by the same
+    factor, so min() and max() move together and swapping one for the other
+    changes nothing they measure. Both effects could be keying off the wrong edge
+    and every one of those assertions would still hold.
+
+    The three frames here separate them. A 200x800 frame and its transpose share
+    a short edge (200) and a long edge (800) — so both effects must match across
+    the pair whichever edge they use, which pins nothing on its own but does pin
+    that neither effect cares about orientation. The 200x200 square is what
+    separates: it has the same SHORT edge as the rectangles and a 4x smaller LONG
+    edge. So grain must be the SAME size in the square as in the rectangles, and
+    halation must be 4x SMALLER. Get min and max the wrong way round and those
+    two expectations trade places.
+    """
+
+    SHORT = 200
+    LONG = 800
+
+    def _highlight(self, shape, size=2):
+        img = np.full(shape + (3,), 0.02, dtype=np.float32)
+        cy, cx = shape[0] // 2, shape[1] // 2
+        img[cy - size:cy + size, cx - size:cx + size] = 1.0
+        return img
+
+    def _bloom_extent(self, shape, radius=0.02):
+        """The bloom's standard deviation, in pixels, along the frame's long axis.
+
+        A second moment rather than a thresholded pixel count: the count depends
+        on the bloom's peak amplitude, which itself falls as the blur widens, so
+        a mask area is only loosely proportional to sigma. The second moment is
+        var(source) + sigma**2 exactly, whatever the amplitude.
+        """
+        img = self._highlight(shape)
+        bloom = effects.add_halation(img, intensity=0.5, radius=radius) - img
+        bloom = bloom[:, :, 0].astype(np.float64)
+
+        long_axis = 0 if shape[0] > shape[1] else 1
+        profile = bloom.sum(axis=1 - long_axis)  # the source is separable, so this is exact
+
+        index = np.arange(profile.size, dtype=np.float64)
+        total = profile.sum()
+        centre = (index * profile).sum() / total
+        return math.sqrt(float((profile * (index - centre) ** 2).sum() / total))
+
+    def _grain_extent(self, shape, size=0.05, seed=1):
+        """The grain's correlation length, in pixels.
+
+        For a Gaussian-filtered white-noise field of width sigma,
+        E[(dg/dx)^2] / E[g^2] == 1 / (2*sigma**2), so sigma == 1/sqrt(2r). This
+        is immune to add_grain's renormalisation back to unit variance — which
+        is exactly what makes a plain .std() comparison blind to grain size.
+        """
+        img = np.full(shape + (3,), 0.5, dtype=np.float32)
+        grain = effects.add_grain(img, 0.1, size=size, seed=seed) - img
+        field = grain[:, :, 0].astype(np.float64)
+
+        delta = np.diff(field, axis=1)
+        ratio = float((delta ** 2).mean()) / float((field ** 2).mean())
+        return 1.0 / math.sqrt(2.0 * ratio)
+
+    def test_grain_keys_off_the_short_edge(self):
+        landscape = self._grain_extent((self.SHORT, self.LONG))
+        portrait = self._grain_extent((self.LONG, self.SHORT))
+        square = self._grain_extent((self.SHORT, self.SHORT))
+
+        # Substantial, multi-pixel blobs — otherwise the ratios below compare
+        # noise.
+        self.assertGreater(square, 3.0)
+
+        # The square's SHORT edge is the same 200 as the rectangle's, but its
+        # LONG edge is a quarter of it. Same short edge => same grain. Keying off
+        # the long edge would make the rectangle's grain 4x coarser.
+        self.assertAlmostEqual(landscape / square, 1.0, delta=0.15,
+                               msg="grain is not keyed off the short edge")
+
+        # And orientation is irrelevant: the transpose shares both edges.
+        self.assertAlmostEqual(landscape / portrait, 1.0, delta=0.15)
+
+    def test_halation_keys_off_the_long_edge(self):
+        landscape = self._bloom_extent((self.SHORT, self.LONG))
+        portrait = self._bloom_extent((self.LONG, self.SHORT))
+        square = self._bloom_extent((self.SHORT, self.SHORT))
+
+        self.assertGreater(square, 3.0)
+
+        # The square's LONG edge is a quarter of the rectangle's, so its bloom
+        # must be about a quarter the size. (Not exactly 4x: gaussian_blur rounds
+        # its box radius to a whole pixel, which costs a few percent at these
+        # sigmas.) Keying off the short edge would make this ratio 1.0 — both
+        # frames have a 200px short edge.
+        self.assertGreater(landscape / square, 3.0,
+                           "halation is not keyed off the long edge")
+        self.assertLess(landscape / square, 4.5)
+
+        # And orientation is irrelevant: the transpose shares both edges.
+        self.assertAlmostEqual(landscape / portrait, 1.0, delta=0.05)
+
+
 class TestGrain(unittest.TestCase):
     def test_zero_intensity_is_identity(self):
         img = np.full((32, 32, 3), 0.5, dtype=np.float32)

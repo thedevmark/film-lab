@@ -5,48 +5,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-try:
-    import numpy as np
-except ModuleNotFoundError as exc:
-    np = None
-    NUMPY_IMPORT_ERROR = exc
-else:
-    NUMPY_IMPORT_ERROR = None
+import numpy as np
+from flask import Flask
+from PIL import Image
 
-try:
-    from flask import Flask
-except ModuleNotFoundError as exc:
-    Flask = None
-    FLASK_IMPORT_ERROR = exc
-else:
-    FLASK_IMPORT_ERROR = None
-
-try:
-    from PIL import Image
-except ModuleNotFoundError as exc:
-    Image = None
-    PIL_IMPORT_ERROR = exc
-else:
-    PIL_IMPORT_ERROR = None
-
-try:
-    import film
-except Exception as exc:
-    film = None
-    FILM_IMPORT_ERROR = exc
-else:
-    FILM_IMPORT_ERROR = None
-
-
-FILM_MATH_READY = film is not None and np is not None and Image is not None
-FILM_ROUTE_READY = film is not None and Flask is not None
-
-
-def _skip_reason(*errors):
-    for error in errors:
-        if error is not None:
-            return str(error)
-    return "required Film Lab test dependencies are unavailable"
+import film
 
 
 def _solid_hald(path: Path, colour):
@@ -58,7 +21,6 @@ def _solid_hald(path: Path, colour):
     Image.new("RGB", (8, 8), colour).save(path)
 
 
-@unittest.skipUnless(FILM_MATH_READY, _skip_reason(FILM_IMPORT_ERROR, NUMPY_IMPORT_ERROR, PIL_IMPORT_ERROR))
 class TestPipeline(unittest.TestCase):
     def setUp(self):
         film._LUT_CACHE.clear()
@@ -67,9 +29,18 @@ class TestPipeline(unittest.TestCase):
         film._LUT_CACHE.clear()
 
     def test_pipeline_runs_in_the_documented_order(self):
+        """Every stage of the pipeline is recorded here, and the params that
+        reach them are captured.
+
+        The rolloff, grade_strength and seed are all in this test because each
+        of them could be deleted, hardcoded or ignored without a single test
+        failing: the order list only pinned the stages it happened to name, and
+        nothing looked at what the stages were called WITH.
+        """
         from filmlab import loader
 
         order = []
+        seen = {}
         source = np.full((8, 8, 3), 0.25, dtype=np.float32)
 
         def record(name, fn):
@@ -78,30 +49,101 @@ class TestPipeline(unittest.TestCase):
                 return fn(*args, **kwargs)
             return inner
 
+        def lut(img, cube, strength=1.0):
+            seen["strength"] = strength
+            return img
+
+        def grain(img, **kwargs):
+            seen["seed"] = kwargs.get("seed")
+            return img
+
         with patch.object(film, "load_image",
                           return_value=(source.copy(), loader.DISPLAY)), \
              patch.object(film, "apply_exposure",
                           side_effect=record("exposure", lambda img, ev: img)), \
              patch.object(film, "add_halation",
                           side_effect=record("halation", lambda img, **k: img)), \
+             patch.object(film, "highlight_rolloff",
+                          side_effect=record("rolloff", lambda img: img)), \
              patch.object(film, "apply_lut",
-                          side_effect=record("lut", lambda img, cube, strength=1.0: img)), \
+                          side_effect=record("lut", lut)), \
              patch.object(film, "apply_contrast",
                           side_effect=record("contrast", lambda img, strength: img)), \
              patch.object(film, "add_grain",
-                          side_effect=record("grain", lambda img, **k: img)):
-            out = film.process_photo(Path("x.jpg"), {"grain_intensity": 0.05})
+                          side_effect=record("grain", grain)):
+            out = film.process_photo(Path("x.jpg"), {
+                "grain_intensity": 0.05,
+                "grade_strength": 0.25,
+                "seed": 4321,
+            })
 
-        # Contrast is AFTER the LUT: the CLUTs were authored against a neutral,
-        # standard-contrast render, so look-contrast before them is counted
-        # twice. Grain is LAST: it is the texture on a finished frame, not a
-        # signal that gets graded.
-        self.assertEqual(order, ["exposure", "halation", "lut", "contrast", "grain"])
+        # The rolloff is BEFORE the sRGB encode and its clip: it exists to catch
+        # what the exposure push sent past 1.0 without the hue rotation a
+        # per-channel clip would inflict. Contrast is AFTER the LUT: the CLUTs
+        # were authored against a neutral, standard-contrast render, so
+        # look-contrast before them is counted twice. Grain is LAST: it is the
+        # texture on a finished frame, not a signal that gets graded.
+        self.assertEqual(
+            order, ["exposure", "halation", "rolloff", "lut", "contrast", "grain"]
+        )
+
+        # grade_strength is the headline control of the whole feature, and seed
+        # is the difference between a reproducible render and a lottery. Both
+        # must actually arrive at the stage that uses them.
+        self.assertEqual(seen["strength"], 0.25)
+        self.assertEqual(seen["seed"], 4321)
+
         self.assertTrue(out.startswith(b"\xff\xd8"))
 
         decoded = Image.open(io.BytesIO(out))
         self.assertEqual(decoded.format, "JPEG")
         self.assertEqual(decoded.size, (8, 8))
+
+    def test_blown_highlights_keep_their_hue_through_the_whole_pipeline(self):
+        """The unmocked half of the rolloff's wiring.
+
+        A +2 EV push sends linear values past 1.0. Without the rolloff, the clip
+        after srgb_encode crushes each channel independently: the brightest
+        channel of a warm highlight hits 1.0 first and the highlight drifts
+        toward yellow-white on its way out. The rolloff compresses the whole
+        triplet by one scale factor, so the linear channel RATIOS — and so the
+        hue — come out of the JPEG intact.
+        """
+        from filmlab import loader
+        from filmlab.tone import srgb_decode, srgb_encode
+
+        # A warm highlight two stops over: ratios 1 : 0.7 : 0.35.
+        linear = np.zeros((8, 8, 3), dtype=np.float32)
+        linear[:, :, 0] = 2.0
+        linear[:, :, 1] = 1.4
+        linear[:, :, 2] = 0.7
+
+        with patch.object(film, "load_image",
+                          return_value=(linear.copy(), loader.DISPLAY)):
+            out = film.process_photo(Path("x.jpg"), {
+                # Only the tone path under test: no LUT, no grain, no halation.
+                "grade_strength": 0.0,
+                "halation_intensity": 0.0,
+                "grain_intensity": 0.0,
+                "contrast_strength": 0.0,
+            })
+
+        # Sanity: red AND green really are over range on their way in, so a
+        # per-channel clip really would flatten both of them to the same 1.0.
+        self.assertGreater(float(srgb_encode(np.float32(2.0))), 1.0)
+        self.assertGreater(float(srgb_encode(np.float32(1.4))), 1.0)
+
+        decoded = np.asarray(Image.open(io.BytesIO(out)), dtype=np.float32) / 255.0
+        result = srgb_decode(decoded)
+        red = float(result[:, :, 0].mean())
+        green = float(result[:, :, 1].mean())
+        blue = float(result[:, :, 2].mean())
+
+        # The over-range input came back into the display range with its channel
+        # ratios intact. A per-channel clip would have sent both red and green to
+        # 1.0, making green/red 1.0 instead of 0.7.
+        self.assertAlmostEqual(green / red, 1.4 / 2.0, delta=0.02)
+        self.assertAlmostEqual(blue / red, 0.7 / 2.0, delta=0.02)
 
     def test_the_lut_sees_srgb_encoded_data_not_linear_light(self):
         """The CLUT is a map on display-referred colour. Handing it linear light
@@ -197,7 +239,6 @@ class TestPipeline(unittest.TestCase):
                          "the hand-tuned colour maths should have been deleted")
 
 
-@unittest.skipUnless(FILM_MATH_READY, _skip_reason(FILM_IMPORT_ERROR, NUMPY_IMPORT_ERROR, PIL_IMPORT_ERROR))
 class TestLutSelection(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -253,8 +294,38 @@ class TestLutSelection(unittest.TestCase):
         np.testing.assert_allclose(cube[..., 2], 1.0, atol=1e-5)
         np.testing.assert_allclose(cube[..., 0], 0.0, atol=1e-5)
 
+    def test_a_lut_installed_after_a_miss_is_picked_up_without_a_restart(self):
+        """docs/extracting-a-lut.md says: extract a LUT, drop it into
+        luts/private/, re-render. The whole workflow depends on that.
 
-@unittest.skipUnless(film is not None, _skip_reason(FILM_IMPORT_ERROR))
+        The cache used to be keyed on the LUT's NAME and used to store the
+        identity fallback under the name of the LUT that was MISSING — so the
+        first render before the file existed poisoned the cache for the life of
+        the process, and the freshly extracted LUT did nothing. A LUT doing
+        nothing looks exactly like a LUT that is wrong, and the acceptance check
+        in that doc tells you a wrong-looking result means go re-extract it.
+
+        Note the deliberate absence of a cache clear between the two calls.
+        """
+        from filmlab.lut import apply_lut
+
+        (self.lut_dir / "private").mkdir()
+        probe = np.array([[[0.1, 0.5, 0.9], [0.0, 1.0, 0.35]]], dtype=np.float32)
+
+        with patch.object(film, "LUT_DIR", self.lut_dir):
+            # Nothing installed yet: a no-op colour stage.
+            cube = film.get_lut("freshly_extracted")
+            np.testing.assert_allclose(apply_lut(probe, cube), probe, atol=1e-6)
+
+            # The user drops their extracted Hald in, and re-renders.
+            _solid_hald(self.lut_dir / "private" / "freshly_extracted.png", (255, 0, 0))
+            cube = film.get_lut("freshly_extracted")
+
+        np.testing.assert_allclose(cube[..., 0], 1.0, atol=1e-5)
+        np.testing.assert_allclose(cube[..., 1], 0.0, atol=1e-5)
+        np.testing.assert_allclose(cube[..., 2], 0.0, atol=1e-5)
+
+
 class TestParams(unittest.TestCase):
     def test_defaults_cover_every_spec_key_plus_the_lut(self):
         clean = film.coerce_params({})
@@ -300,7 +371,83 @@ class TestParams(unittest.TestCase):
                 self.assertAlmostEqual(clean[key], value, msg=f"{name}.{key} was clamped")
 
 
-@unittest.skipUnless(FILM_ROUTE_READY, _skip_reason(FILM_IMPORT_ERROR, FLASK_IMPORT_ERROR))
+class TestLegacyPresetUnits(unittest.TestCase):
+    """grain_size and halation_radius used to be PIXEL counts.
+
+    They are now fractions of an edge, capped at 0.05 and 0.10. A preset saved
+    before that change (grain_size: 3, halation_radius: 38) does not fail on
+    load — it CLAMPS, to the maximum of each, which on a 4000x3000 photo is a
+    150px grain sigma and a 400px halation sigma. The render is destroyed and
+    nothing says so.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.presets_file = Path(self.tmp.name) / "film_presets.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write(self, presets):
+        self.presets_file.write_text(json.dumps(presets), encoding="utf-8")
+
+    def test_v1_pixel_values_fall_back_to_the_defaults_not_the_maxima(self):
+        self._write({
+            "Old Look": {
+                "lut":                "kodak_gold_200",
+                "grade_strength":     0.70,
+                "grain_intensity":    0.06,
+                "grain_size":         3,     # v1: PIXELS
+                "halation_intensity": 0.50,
+                "halation_radius":    38,    # v1: PIXELS
+            }
+        })
+
+        with self.assertLogs("film", level="WARNING") as logs:
+            loaded = film._load_user_presets(self.presets_file)
+
+        params = loaded["Old Look"]
+
+        # The old pixel count cannot be converted into a fraction without the
+        # dimensions of the photo it was tuned on, so the honest answer is the
+        # default — NOT the clamped maximum.
+        self.assertEqual(params["grain_size"], film.DEFAULT_PARAMS["grain_size"])
+        self.assertEqual(params["halation_radius"], film.DEFAULT_PARAMS["halation_radius"])
+
+        # And it survives the boundary clamp, which is where the damage used to
+        # be done.
+        clean = film.coerce_params(params)
+        self.assertEqual(clean["grain_size"], film.DEFAULT_PARAMS["grain_size"])
+        self.assertEqual(clean["halation_radius"], film.DEFAULT_PARAMS["halation_radius"])
+        self.assertNotEqual(clean["grain_size"], film.PARAM_SPEC["grain_size"][2])
+        self.assertNotEqual(clean["halation_radius"], film.PARAM_SPEC["halation_radius"][2])
+
+        # Everything the user chose that still means what it meant is untouched.
+        self.assertEqual(params["grade_strength"], 0.70)
+        self.assertEqual(params["grain_intensity"], 0.06)
+
+        # Silently rewriting someone's preset is its own defect.
+        self.assertTrue(any("grain_size" in line for line in logs.output))
+        self.assertTrue(any("halation_radius" in line for line in logs.output))
+
+    def test_current_presets_are_left_alone(self):
+        current = {
+            "New Look": {
+                "lut":                "kodak_gold_200",
+                "grade_strength":     0.85,
+                "grain_intensity":    0.055,
+                "grain_size":         0.0015,
+                "halation_intensity": 0.45,
+                "halation_radius":    0.010,
+            }
+        }
+        self._write(current)
+
+        loaded = film._load_user_presets(self.presets_file)
+
+        self.assertEqual(loaded, current)
+
+
 class TestFilmRoutes(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()

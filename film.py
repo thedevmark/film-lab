@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import math
 import os
 import tempfile
@@ -18,6 +19,8 @@ from filmlab.effects import add_grain, add_halation
 from filmlab.loader import IMAGE_EXTENSIONS, RAW_EXTENSIONS, SCENE, load_image
 from filmlab.lut import apply_lut, identity_cube, load_hald
 from filmlab.tone import highlight_rolloff, srgb_encode
+
+logger = logging.getLogger(__name__)
 
 # ── Built-in presets ─────────────────────────────────────────────────────────
 # Built-ins live in code only — cannot be overwritten by the user.
@@ -127,25 +130,35 @@ LUT_DIR = Path(__file__).parent / "luts"
 GREY_SCENE = 0.18    # linear scene middle grey
 GREY_DISPLAY = 0.18  # where we want it to land before the LUT
 
-_LUT_CACHE: dict[str, np.ndarray] = {}
+# Keyed on the FILE's identity, not the LUT's name: a name is not stable enough
+# to cache under. Dropping a freshly extracted LUT into luts/private/ replaces
+# the file behind a name that has already been rendered with, and a name-keyed
+# entry would go on serving the old table for the life of the process.
+_LUT_CACHE: dict[tuple, np.ndarray] = {}
 
 
 def get_lut(name: str) -> np.ndarray:
     """Load a LUT by name, from luts/private/ first, then luts/open/."""
-    if name in _LUT_CACHE:
-        return _LUT_CACHE[name]
-
     for folder in ("private", "open"):
         path = LUT_DIR / folder / f"{name}.png"
         if path.exists():
-            cube = load_hald(path)
-            _LUT_CACHE[name] = cube
-            return cube
+            stat = path.stat()
+            # A replaced file gets a new mtime (or a new size), and so a new key.
+            key = (str(path), stat.st_mtime_ns, stat.st_size)
+            if key not in _LUT_CACHE:
+                _LUT_CACHE[key] = load_hald(path)
+            return _LUT_CACHE[key]
 
     # No LUT installed: fall through to a no-op rather than failing the render.
-    cube = identity_cube(2)
-    _LUT_CACHE[name] = cube
-    return cube
+    #
+    # NEVER cache this. The documented workflow (docs/extracting-a-lut.md) is
+    # "drop a file into luts/private/ and re-render", so the miss is expected to
+    # stop being a miss without a restart. A cached identity would silently
+    # swallow the new LUT — and a LUT doing nothing is indistinguishable from a
+    # LUT that is wrong, which is what sends someone off to re-extract a LUT
+    # that was fine. The cube is 2x2x2 and the exists() checks are two stats;
+    # both are free next to decoding the photo.
+    return identity_cube(2)
 
 
 # ── Exposure and contrast ─────────────────────────────────────────────────────
@@ -226,6 +239,46 @@ def process_photo(input_path: Path, params: dict) -> bytes:
 
 _PRESETS_LOCK = threading.Lock()
 
+# grain_size and halation_radius changed units. They used to be PIXEL counts
+# (grain_size: 3, halation_radius: 38); they are now FRACTIONS of an edge, with
+# maxima of 0.05 and 0.10. A preset written before that change and fed straight
+# through coerce_params clamps BOTH to their maximum, which on a 4000x3000 photo
+# is a 150px grain sigma and a 400px halation sigma — the render is destroyed.
+#
+# The migration cannot live in coerce_params: that is a boundary clamp on
+# untrusted input and has no way to tell a v1 file from a v2 request. It lives
+# here, where "this value came out of a stored file" is known.
+#
+# Detection is by range, which is unambiguous: the new maxima are 0.05 and 0.10,
+# and the old pixel values were >= 1 and >= 5. Anything above the new maximum in
+# a stored preset is therefore a v1 pixel count.
+#
+# There is no conversion. A pixel count only becomes a fraction if you know the
+# dimensions of the image it was tuned on, and those are not in the file. The
+# default is the honest answer; an invented conversion is not.
+_LEGACY_PIXEL_PARAMS = ("grain_size", "halation_radius")
+
+
+def _migrate_legacy_units(data: dict) -> dict:
+    for preset_name, params in data.items():
+        if not isinstance(params, dict):
+            continue
+        for key in _LEGACY_PIXEL_PARAMS:
+            value = params.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            _cast, _low, high = PARAM_SPEC[key]
+            if value > high:
+                logger.warning(
+                    "Preset %r: %s=%s is a pixel count from an older version "
+                    "(%s is now a fraction of an edge, max %s). Falling back to "
+                    "the default of %s — the original value cannot be converted "
+                    "without the dimensions of the photo it was tuned on.",
+                    preset_name, key, value, key, high, DEFAULT_PARAMS[key],
+                )
+                params[key] = DEFAULT_PARAMS[key]
+    return data
+
 
 def _load_user_presets(presets_file: Path, tolerate_corrupt: bool = True) -> dict:
     """Read the presets file.
@@ -247,7 +300,7 @@ def _load_user_presets(presets_file: Path, tolerate_corrupt: bool = True) -> dic
         if tolerate_corrupt:
             return {}
         raise ValueError("presets file is not a JSON object")
-    return data
+    return _migrate_legacy_units(data)
 
 
 def _save_user_presets(presets_file: Path, user_presets: dict):
