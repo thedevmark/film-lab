@@ -217,3 +217,112 @@ def load_hald(path: Path) -> np.ndarray:
 
     # Raster order is [b, g, r]; we want [r, g, b].
     return np.ascontiguousarray(flat.reshape(size, size, size, 3).transpose(2, 1, 0, 3))
+
+
+# --- Tetrahedral interpolation -------------------------------------------
+
+def apply_lut(rgb, cube, strength: float = 1.0):
+    """Apply a 3D LUT with tetrahedral interpolation.
+
+    Input and output are sRGB-encoded [0,1]. Values outside the range are
+    clipped, not wrapped — the LUT is only defined on the unit cube.
+
+    Tetrahedral rather than trilinear because the neutral diagonal is a shared
+    edge of all six tetrahedra: an R==G==B input therefore interpolates only
+    between lattice nodes that are themselves neutral, so greys stay grey by
+    construction. Trilinear weights all eight corners, most of them off-axis,
+    and tints what should be a pure neutral. It is also cheaper: four fetches
+    instead of eight.
+    """
+    rgb = np.asarray(rgb, dtype=np.float32)
+    if strength <= 0.0:
+        return rgb.copy()
+
+    size = cube.shape[0]
+    clipped = np.clip(rgb, 0.0, 1.0)
+
+    scaled = clipped * np.float32(size - 1)
+    base = np.clip(np.floor(scaled), 0, size - 2).astype(np.int32)
+    frac = (scaled - base).astype(np.float32)
+
+    ir, ig, ib = base[..., 0], base[..., 1], base[..., 2]
+    dr, dg, db = frac[..., 0], frac[..., 1], frac[..., 2]
+
+    def node(orr, og, ob):
+        return cube[ir + orr, ig + og, ib + ob]
+
+    c000 = node(0, 0, 0)
+    c111 = node(1, 1, 1)
+
+    # Six tetrahedra, selected by the ordering of (dr, dg, db). Each case is a
+    # weighted sum of four nodes: c000, c111, and two edge-adjacent corners.
+    #
+    # cond_rg / cond_gb / cond_rb only reach six of the eight possible
+    # (T/F, T/F, T/F) combinations: (T,T,F) and (F,F,T) are algebraically
+    # impossible (dr>dg>db>dr is inconsistent, and its mirror). The six masks
+    # below are the six reachable combinations, each attached to the formula
+    # for its matching ordering:
+    #
+    #   (T,T,T) dr>dg>db | (T,F,T) dr>db>dg | (T,F,F) db>dr>dg
+    #   (F,F,F) db>dg>dr | (F,T,F) dg>db>dr | (F,T,T) dg>dr>db
+    #
+    # Getting a mask's booleans out of order silently sends pixels through the
+    # wrong formula (or lets two masks overlap, or leaves a gap) without
+    # raising anything -- see test_lut.py's TestApplyLutSixTetrahedra for the
+    # verification that these six partition every pixel exactly once.
+    out = np.empty(rgb.shape, dtype=np.float32)
+
+    w = lambda x: x[..., None]  # noqa: E731 - broadcast a weight over RGB
+
+    cond_rg = dr > dg
+    cond_gb = dg > db
+    cond_rb = dr > db
+
+    # dr > dg > db  ->  (T,T,T)
+    m = cond_rg & cond_gb
+    out = np.where(w(m),
+                   w(1 - dr) * c000 + w(dr - dg) * node(1, 0, 0)
+                   + w(dg - db) * node(1, 1, 0) + w(db) * c111,
+                   0.0).astype(np.float32)
+
+    # dr > db > dg  ->  (T,F,T)
+    m = cond_rg & ~cond_gb & cond_rb
+    out += np.where(w(m),
+                    w(1 - dr) * c000 + w(dr - db) * node(1, 0, 0)
+                    + w(db - dg) * node(1, 0, 1) + w(dg) * c111,
+                    0.0).astype(np.float32)
+
+    # db > dr > dg  ->  (T,F,F)
+    m = cond_rg & ~cond_gb & ~cond_rb
+    out += np.where(w(m),
+                    w(1 - db) * c000 + w(db - dr) * node(0, 0, 1)
+                    + w(dr - dg) * node(1, 0, 1) + w(dg) * c111,
+                    0.0).astype(np.float32)
+
+    # db > dg > dr  ->  (F,F,F)  (also where dr == dg == db lands: all three
+    # comparisons are False when the deltas are equal, and this formula then
+    # collapses to (1-d)*c000 + d*c111 -- the neutral-axis guarantee.)
+    m = ~cond_rg & ~cond_gb & ~cond_rb
+    out += np.where(w(m),
+                    w(1 - db) * c000 + w(db - dg) * node(0, 0, 1)
+                    + w(dg - dr) * node(0, 1, 1) + w(dr) * c111,
+                    0.0).astype(np.float32)
+
+    # dg > db > dr  ->  (F,T,F)
+    m = ~cond_rg & cond_gb & ~cond_rb
+    out += np.where(w(m),
+                    w(1 - dg) * c000 + w(dg - db) * node(0, 1, 0)
+                    + w(db - dr) * node(0, 1, 1) + w(dr) * c111,
+                    0.0).astype(np.float32)
+
+    # dg > dr > db  ->  (F,T,T)
+    m = ~cond_rg & cond_gb & cond_rb
+    out += np.where(w(m),
+                    w(1 - dg) * c000 + w(dg - dr) * node(0, 1, 0)
+                    + w(dr - db) * node(1, 1, 0) + w(db) * c111,
+                    0.0).astype(np.float32)
+
+    if strength >= 1.0:
+        return out
+    s = np.float32(strength)
+    return (s * out + (np.float32(1.0) - s) * rgb).astype(np.float32)

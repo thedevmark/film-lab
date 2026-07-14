@@ -370,5 +370,207 @@ class TestReadPng16RgbMultiFilterScanlines(unittest.TestCase):
                 self.assertEqual(int(arr[y, 1, channel]), col1, f"row {y} col 1 channel {channel}")
 
 
+class TestApplyLut(unittest.TestCase):
+    def test_identity_lut_is_a_no_op(self):
+        cube = lut.identity_cube(64)
+        rng = np.random.default_rng(0)
+        rgb = rng.random((32, 32, 3), dtype=np.float32)
+
+        out = lut.apply_lut(rgb, cube)
+
+        np.testing.assert_allclose(out, rgb, atol=1e-5)
+
+    def test_greys_stay_grey(self):
+        """The whole reason for tetrahedral over trilinear.
+
+        A LUT that is neutral on its diagonal must leave R==G==B inputs neutral.
+        Trilinear pulls from off-axis corners and tints them; tetrahedral cannot,
+        because the neutral diagonal is a shared edge of all six tetrahedra.
+        """
+        cube = lut.identity_cube(16)
+        # Warp the cube off-axis, but keep the neutral diagonal exactly neutral.
+        rng = np.random.default_rng(1)
+        cube = np.clip(cube + rng.normal(0, 0.05, cube.shape), 0, 1).astype(np.float32)
+        for i in range(16):
+            cube[i, i, i] = np.float32(i / 15.0)
+
+        grey = np.linspace(0, 1, 256, dtype=np.float32)
+        rgb = np.stack([grey, grey, grey], axis=-1)[None, :, :]
+
+        out = lut.apply_lut(rgb, cube)
+
+        np.testing.assert_allclose(out[..., 0], out[..., 1], atol=1e-5)
+        np.testing.assert_allclose(out[..., 1], out[..., 2], atol=1e-5)
+
+    def test_hits_lattice_nodes_exactly(self):
+        size = 8
+        cube = lut.identity_cube(size)
+        cube[2, 3, 4] = np.array([0.9, 0.1, 0.5], dtype=np.float32)
+
+        rgb = np.array([[[2 / 7.0, 3 / 7.0, 4 / 7.0]]], dtype=np.float32)
+        out = lut.apply_lut(rgb, cube)
+
+        np.testing.assert_allclose(out[0, 0], [0.9, 0.1, 0.5], atol=1e-5)
+
+    def test_strength_blends_toward_the_input(self):
+        size = 8
+        cube = np.zeros((size, size, size, 3), dtype=np.float32)  # maps everything to black
+        rgb = np.full((4, 4, 3), 0.6, dtype=np.float32)
+
+        half = lut.apply_lut(rgb, cube, strength=0.5)
+        none = lut.apply_lut(rgb, cube, strength=0.0)
+        full = lut.apply_lut(rgb, cube, strength=1.0)
+
+        np.testing.assert_allclose(none, rgb, atol=1e-6)
+        np.testing.assert_allclose(full, 0.0, atol=1e-6)
+        np.testing.assert_allclose(half, rgb * 0.5, atol=1e-6)
+
+    def test_out_of_range_input_is_clipped_not_wrapped(self):
+        cube = lut.identity_cube(16)
+        rgb = np.array([[[-0.5, 1.5, 0.5]]], dtype=np.float32)
+
+        out = lut.apply_lut(rgb, cube)
+
+        np.testing.assert_allclose(out[0, 0], [0.0, 1.0, 0.5], atol=1e-4)
+
+
+def _reference_tetrahedral_lookup(r, g, b, cube):
+    """Plain-Python, obviously-correct per-pixel tetrahedral lookup.
+
+    This is deliberately NOT vectorized and shares none of `apply_lut`'s code
+    -- it exists purely as test scaffolding, precisely because the six-mask
+    vectorized form in `filmlab/lut.py` is easy to get subtly wrong (two masks
+    overlapping double-counts a pixel and brightens it; a gap between masks
+    leaves a pixel black) in ways that greys-stay-grey / lattice-node /
+    identity-cube tests cannot see, since all of those happen to be invariant
+    under exactly the kind of mask mix-up this function is here to catch.
+    Six explicit if/elif branches, one per ordering of (dr, dg, db), each
+    doing the arithmetic from the brief by hand.
+    """
+    size = cube.shape[0]
+    sr, sg, sb = r * (size - 1), g * (size - 1), b * (size - 1)
+    ir = min(int(np.floor(sr)), size - 2)
+    ig = min(int(np.floor(sg)), size - 2)
+    ib = min(int(np.floor(sb)), size - 2)
+    dr, dg, db = sr - ir, sg - ig, sb - ib
+
+    def node(orr, og, ob):
+        return cube[ir + orr, ig + og, ib + ob].astype(np.float64)
+
+    c000 = node(0, 0, 0)
+    c111 = node(1, 1, 1)
+
+    if dr > dg > db:
+        out = (1 - dr) * c000 + (dr - dg) * node(1, 0, 0) + (dg - db) * node(1, 1, 0) + db * c111
+    elif dr > db > dg:
+        out = (1 - dr) * c000 + (dr - db) * node(1, 0, 0) + (db - dg) * node(1, 0, 1) + dg * c111
+    elif db > dr > dg:
+        out = (1 - db) * c000 + (db - dr) * node(0, 0, 1) + (dr - dg) * node(1, 0, 1) + dg * c111
+    elif db > dg > dr:
+        out = (1 - db) * c000 + (db - dg) * node(0, 0, 1) + (dg - dr) * node(0, 1, 1) + dr * c111
+    elif dg > db > dr:
+        out = (1 - dg) * c000 + (dg - db) * node(0, 1, 0) + (db - dr) * node(0, 1, 1) + dr * c111
+    else:  # dg > dr > db (also where dr == dg == db, all comparisons False -> db>dg>dr branch above)
+        out = (1 - dg) * c000 + (dg - dr) * node(0, 1, 0) + (dr - db) * node(1, 1, 0) + db * c111
+
+    return out
+
+
+class TestApplyLutAgainstReferenceImplementation(unittest.TestCase):
+    """Test A: reference-implementation equivalence on a non-affine cube.
+
+    This is the test that would have caught the six-tetrahedra masking bug:
+    an earlier draft of `apply_lut` had three of its six boolean masks
+    labelled with the wrong ordering, so some pixels were run through the
+    formula for a *different* tetrahedron than the one their (dr, dg, db)
+    actually fell in. Every other test in this file passes against both the
+    correct and the buggy version, because they only probe greys (which all
+    six formulas agree on), lattice nodes (dr == dg == db == 0), or an
+    identity/all-zero cube (where several formulas collapse to the same
+    answer). Only a comparison against an independent, non-vectorized,
+    obviously-correct reference on a genuinely warped (non-affine) cube with
+    off-axis, non-lattice-aligned query colours can distinguish "the right
+    node, wrong weight" failure this kind of bug produces.
+    """
+
+    def test_matches_reference_on_random_non_affine_cube_queries(self):
+        size = 16
+        rng = np.random.default_rng(42)
+        cube = lut.identity_cube(size)
+        # Non-affine warp: identity_cube is exactly affine (cube[r,g,b] ==
+        # (r,g,b)/(size-1)), so every tetrahedral formula degenerates to
+        # plain linear interpolation on it and cannot distinguish a mask bug
+        # from correct code. Random per-node noise breaks that affineness.
+        cube = np.clip(cube + rng.normal(0, 0.08, cube.shape), 0.0, 1.0).astype(np.float32)
+
+        out_cube = lut.apply_lut  # keep the reference to apply_lut close to its call site
+
+        # A few hundred random, non-grey, non-lattice-aligned query colours.
+        # Continuous uniform draws already make r==g==b, exact lattice
+        # alignment (frac==0), and ties between fractional offsets
+        # probability-zero events, so no explicit nudge is needed -- and a
+        # nudge-then-clip approach is actively dangerous here: clipping to
+        # exactly 0.0/1.0 forces the fractional offset to exactly 0 or 1,
+        # which can tie two of (dr, dg, db) exactly. Kept away from the
+        # extreme ends purely so no channel clips to a boundary value.
+        n = 400
+        colours = rng.uniform(0.03, 0.97, (n, 3))
+
+        rgb = colours.astype(np.float32).reshape(1, n, 3)
+        vectorized = out_cube(rgb, cube)
+
+        for i in range(n):
+            r, g, b = colours[i]
+            expected = _reference_tetrahedral_lookup(r, g, b, cube)
+            np.testing.assert_allclose(
+                vectorized[0, i], expected, atol=1e-4,
+                err_msg=f"query {i}: rgb=({r!r},{g!r},{b!r})",
+            )
+
+
+class TestApplyLutSixTetrahedraPartition(unittest.TestCase):
+    """Test B: the six masks partition exactly.
+
+    `apply_lut` sums six `np.where(mask, formula, 0.0)` terms. If two masks
+    ever overlap on the same pixel, that pixel gets two formulas added
+    together and comes out too bright; if no mask covers a pixel, it comes
+    out black (the `np.where` false-branch is 0.0). This test asserts, over
+    many random (dr, dg, db) triples, that exactly one of the six masks is
+    True per pixel -- never zero, never two.
+
+    NOTE: this check alone is NOT sufficient to catch a masking bug -- the
+    earlier buggy version of `apply_lut` (three masks pointing at the wrong
+    formula) also partitioned every pixel exactly once. Mislabelling which
+    *formula* a correctly-partitioning mask is attached to produces wrong
+    colours while still summing to exactly 1 everywhere. That is exactly why
+    `TestApplyLutAgainstReferenceImplementation` (Test A) exists: this test
+    (Test B) can rule out double-counting/gaps, but only an independent
+    reference implementation can catch a right-mask-wrong-formula bug.
+    """
+
+    def test_masks_sum_to_exactly_one_everywhere(self):
+        rng = np.random.default_rng(7)
+        n = 200_000
+        dr = rng.random(n, dtype=np.float32)
+        dg = rng.random(n, dtype=np.float32)
+        db = rng.random(n, dtype=np.float32)
+
+        cond_rg = dr > dg
+        cond_gb = dg > db
+        cond_rb = dr > db
+
+        m1 = cond_rg & cond_gb                  # dr > dg > db
+        m2 = cond_rg & ~cond_gb & cond_rb        # dr > db > dg
+        m3 = cond_rg & ~cond_gb & ~cond_rb       # db > dr > dg
+        m4 = ~cond_rg & ~cond_gb & ~cond_rb      # db > dg > dr
+        m5 = ~cond_rg & cond_gb & ~cond_rb       # dg > db > dr
+        m6 = ~cond_rg & cond_gb & cond_rb        # dg > dr > db
+
+        total = (m1.astype(np.int64) + m2.astype(np.int64) + m3.astype(np.int64)
+                 + m4.astype(np.int64) + m5.astype(np.int64) + m6.astype(np.int64))
+
+        self.assertTrue(np.all(total == 1), f"partition violated: counts={np.bincount(total)}")
+
+
 if __name__ == "__main__":
     unittest.main()
