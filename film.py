@@ -10,12 +10,14 @@ import math
 import os
 import tempfile
 import threading
+from dataclasses import asdict as _dataclass_dict
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 from flask import request, jsonify, send_file
 
+from filmlab.batch import BatchManager
 from filmlab.effects import add_grain, add_halation
 from filmlab.loader import IMAGE_EXTENSIONS, RAW_EXTENSIONS, SCENE, load_image
 from filmlab.lut import apply_lut, identity_cube, load_hald
@@ -479,3 +481,49 @@ def register_film_routes(app, presets_file: Path):
             as_attachment=True,
             download_name="film_processed.jpg",
         )
+
+    # ── Batch ─────────────────────────────────────────────────────────────────
+
+    def _process_to_disk(src: Path, out: Path, params: dict):
+        out.write_bytes(process_photo(src, params))
+
+    batch = BatchManager(RAW_EXTENSIONS | IMAGE_EXTENSIONS, _process_to_disk)
+
+    @app.route("/api/film/batch", methods=["POST"])
+    def film_batch_start():
+        if not request.is_json:
+            return jsonify({"error": "Expected application/json."}), 415
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "Invalid request body."}), 400
+
+        source = str(data.get("source", "")).strip()
+        dest = str(data.get("dest", "")).strip()
+        if not source or not dest:
+            return jsonify({"error": "Source and output folders are required."}), 400
+
+        try:
+            params = coerce_params(data.get("params") or {})
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        try:
+            job = batch.start(Path(source), Path(dest), params)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+
+        return jsonify(_dataclass_dict(job))
+
+    @app.route("/api/film/batch/<job_id>")
+    def film_batch_status(job_id):
+        state = batch.get(job_id)
+        if state is None:
+            return jsonify({"error": "No such job."}), 404
+        return jsonify(state)
+
+    @app.route("/api/film/batch/<job_id>/cancel", methods=["POST"])
+    def film_batch_cancel(job_id):
+        return jsonify({"cancelled": batch.cancel(job_id)})

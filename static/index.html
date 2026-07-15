@@ -128,6 +128,33 @@
                 </div>
                 <p id="film-status" class="settings-hint"></p>
             </section>
+
+            <section class="workflow-step">
+                <h2 class="step-label">6. Batch a Folder</h2>
+                <p class="settings-hint">
+                    Applies the look dialled in above to every photo in a folder.
+                    Already-rendered files are skipped, so you can stop and resume.
+                </p>
+                <div class="film-batch-field">
+                    <label for="film-batch-source">Source folder</label>
+                    <input type="text" id="film-batch-source" class="film-text-input"
+                           placeholder="D:\Photos\2026-07-14 Shoot" spellcheck="false">
+                </div>
+                <div class="film-batch-field">
+                    <label for="film-batch-dest">Output folder</label>
+                    <input type="text" id="film-batch-dest" class="film-text-input"
+                           placeholder="D:\Photos\2026-07-14 Shoot\_film" spellcheck="false">
+                </div>
+                <div class="film-batch-progress">
+                    <div class="film-batch-track"><div id="film-batch-bar" class="film-batch-bar"></div></div>
+                    <span id="film-batch-count" class="film-slider-value"></span>
+                </div>
+                <div class="film-action-row">
+                    <button type="button" class="primary-btn" id="film-batch-run-btn">Run Batch</button>
+                    <button type="button" class="secondary-btn" id="film-batch-cancel-btn" disabled>Cancel</button>
+                </div>
+                <p id="film-batch-status" class="settings-hint"></p>
+            </section>
         </div>
     </main>
 

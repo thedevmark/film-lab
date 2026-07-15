@@ -98,6 +98,7 @@ const FilmLab = (() => {
         _bindOutputControls();
         _clearSourcePreview();
         _clearOutputPreview();
+        _bindBatchControls();
         loadPresets();
     }
 
@@ -419,5 +420,146 @@ const FilmLab = (() => {
             });
     }
 
-    return { init, loadPresets, processPhoto, savePreset };
+    // ── Batch ─────────────────────────────────────────────────────────────────
+    // Applies the look currently dialled in above to a whole folder, one file at
+    // a time, resumable. It sends `currentParams`, so what you see on the single
+    // photo is what the batch renders.
+    let batchJobId = null;
+    let batchPollTimer = null;
+
+    function _bindBatchControls() {
+        const runBtn = document.getElementById("film-batch-run-btn");
+        const cancelBtn = document.getElementById("film-batch-cancel-btn");
+        if (runBtn) runBtn.addEventListener("click", startBatch);
+        if (cancelBtn) cancelBtn.addEventListener("click", cancelBatch);
+    }
+
+    function startBatch() {
+        if (batchJobId) return;
+        const source = document.getElementById("film-batch-source")?.value.trim();
+        const dest = document.getElementById("film-batch-dest")?.value.trim();
+        const statusEl = document.getElementById("film-batch-status");
+
+        if (!source || !dest) {
+            _setBatchStatus("Enter a source folder and an output folder.", true);
+            return;
+        }
+
+        _setBatchRunning(true);
+        _setBatchStatus("Starting…", false);
+        _renderBatchProgress(null);
+        batchPollFailures = 0;
+
+        fetch("/api/film/batch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source, dest, params: currentParams }),
+        })
+            .then(r => r.json().then(d => ({ ok: r.ok, d })))
+            .then(({ ok, d }) => {
+                if (!ok) return Promise.reject(d.error || "Could not start the batch.");
+                batchJobId = d.id;
+                _renderBatchProgress(d);
+                _pollBatch();
+            })
+            .catch(err => {
+                _setBatchRunning(false);
+                _setBatchStatus(typeof err === "string" ? err : "Could not start the batch.", true);
+            });
+    }
+
+    let batchPollFailures = 0;
+    const BATCH_POLL_MAX_FAILURES = 10;  // ~10s of transient errors before giving up
+
+    function _pollBatch() {
+        if (!batchJobId) return;
+        fetch(`/api/film/batch/${batchJobId}`)
+            .then(r => {
+                if (r.status === 404) {
+                    // The job is gone — the server was probably restarted mid-run.
+                    return Promise.reject({ terminal: true,
+                        message: "Lost track of the batch — the server may have restarted." });
+                }
+                if (!r.ok) return Promise.reject({ message: `Status check failed (${r.status}).` });
+                return r.json();
+            })
+            .then(state => {
+                batchPollFailures = 0;
+                _renderBatchProgress(state);
+                if (state.status === "running") {
+                    batchPollTimer = setTimeout(_pollBatch, 500);
+                    return;
+                }
+                _finishBatch(state);
+            })
+            .catch(err => {
+                if (err && err.terminal) {
+                    _setBatchRunning(false);
+                    batchJobId = null;
+                    _setBatchStatus(err.message, true);
+                    return;
+                }
+                batchPollFailures += 1;
+                if (batchPollFailures >= BATCH_POLL_MAX_FAILURES) {
+                    _setBatchRunning(false);
+                    batchJobId = null;
+                    _setBatchStatus("Lost contact with the batch. It may still be running on the server.", true);
+                    return;
+                }
+                batchPollTimer = setTimeout(_pollBatch, 1000);
+            });
+    }
+
+    function _finishBatch(state) {
+        _setBatchRunning(false);
+        batchJobId = null;
+        const parts = [`${state.done} rendered`];
+        if (state.skipped) parts.push(`${state.skipped} skipped`);
+        if (state.failed) parts.push(`${state.failed} failed`);
+        const summary = parts.join(", ");
+        const label = {
+            done: `Done — ${summary}.`,
+            cancelled: `Cancelled — ${summary}.`,
+            error: state.error || "The batch stopped unexpectedly.",
+        }[state.status] || summary;
+        _setBatchStatus(label, state.status === "error");
+    }
+
+    function cancelBatch() {
+        if (!batchJobId) return;
+        _setBatchStatus("Cancelling…", false);
+        fetch(`/api/film/batch/${batchJobId}/cancel`, { method: "POST" }).catch(() => {});
+    }
+
+    function _renderBatchProgress(state) {
+        const bar = document.getElementById("film-batch-bar");
+        const count = document.getElementById("film-batch-count");
+        if (!bar || !count) return;
+        if (!state || !state.total) {
+            bar.style.width = "0%";
+            count.textContent = state ? "0 / 0" : "";
+            return;
+        }
+        const finished = state.done + state.skipped + state.failed;
+        bar.style.width = `${Math.round((finished / state.total) * 100)}%`;
+        const tail = state.current ? ` · ${state.current}` : "";
+        count.textContent = `${finished} / ${state.total}${tail}`;
+    }
+
+    function _setBatchRunning(running) {
+        const runBtn = document.getElementById("film-batch-run-btn");
+        const cancelBtn = document.getElementById("film-batch-cancel-btn");
+        if (runBtn) { runBtn.disabled = running; runBtn.textContent = running ? "Running…" : "Run Batch"; }
+        if (cancelBtn) cancelBtn.disabled = !running;
+        if (!running && batchPollTimer) { clearTimeout(batchPollTimer); batchPollTimer = null; }
+    }
+
+    function _setBatchStatus(message, isError) {
+        const el = document.getElementById("film-batch-status");
+        if (!el) return;
+        el.textContent = message;
+        el.classList.toggle("error-msg", !!isError);
+    }
+
+    return { init, loadPresets, processPhoto, savePreset, startBatch, cancelBatch };
 })();
