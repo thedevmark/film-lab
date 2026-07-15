@@ -18,6 +18,8 @@
 - Halation is **additive** and red-dominant (`s_R ≫ s_G > s_B ≈ 0`). Never a normalised mix — that conserves the local mean and cannot add density around a highlight.
 - Halation and grain sizes are **fractions of the long edge**, never pixel counts, or the look changes between preview and export.
 - Existing public names `process_photo`, `register_film_routes`, `coerce_params`, `BUILTIN_PRESETS` must keep working — `app.py` and the existing tests import them.
+- **Tasks 1–7 build the new modules alongside the old code. They do NOT rewire `film.py`.** The swap is atomic, in Task 8. This is deliberate: a half-rewired `film.py` (a new loader feeding old display-space maths, or a fractional radius reaching a pixel-based blur) is broken in ways the tests would not catch, and it violates the green-suite constraint above. `filmlab/effects.py` and `film.py` therefore both define `add_halation` for the duration of Tasks 6–7. **That duplication is intentional and scheduled for deletion in Task 8** — reviewers should know it is temporary, and should still flag it if Task 8 fails to remove it.
+- The one exception is Task 1, which *moves* the blur helpers out of `film.py` into `filmlab/blur.py` and re-imports them. That is a pure move with no behaviour change, and the suite stays green.
 
 ---
 
@@ -1033,35 +1035,25 @@ def load_image(path: Path, max_long_edge: int = 6000):
 Run: `python -m unittest tests.test_loader -v`
 Expected: PASS, 6 tests
 
-- [ ] **Step 5: Remove the old loader from `film.py`**
+- [ ] **Step 5: Leave `film.py` alone**
 
-Delete the `_load_image` function from `film.py` entirely. Leave `process_photo` calling it for now — it will break, which is correct: Task 8 rewires it. To keep the suite green in the meantime, add at the top of `film.py`:
+Do **not** touch `film.py` in this task, and do not delete its `_load_image`. The
+old pipeline keeps its own loader until Task 8 swaps everything at once. Feeding
+the new linear loader into the old display-space maths would be broken in a way
+the tests would not catch.
 
-```python
-from filmlab.loader import load_image as _load_new_image
-```
-
-and change `process_photo`'s first line from `img = _load_image(input_path)` to:
-
-```python
-    linear, state = _load_new_image(input_path)
-    # Interim shim: the old maths below is display-referred, so re-encode.
-    # Task 8 removes this entirely.
-    from filmlab.tone import srgb_encode
-    img = srgb_encode(linear) if state == "display" else srgb_encode(linear)
-```
-
-Move the EXIF test out of `tests/test_defects.py` (it now lives in `tests/test_loader.py`) by deleting the `TestExifOrientation` class from `test_defects.py`.
+Likewise leave `tests/test_defects.py::TestExifOrientation` in place — it still
+guards the old loader, which is still live. Task 8 removes both together.
 
 - [ ] **Step 6: Run the full suite**
 
 Run: `python -m unittest discover -s tests`
-Expected: OK
+Expected: OK (the new loader tests pass; nothing existing changed)
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add filmlab/loader.py tests/test_loader.py tests/test_defects.py film.py
+git add filmlab/loader.py tests/test_loader.py
 git commit -m "Load photos into linear light, tagged by input state
 
 rawpy.postprocess with its defaults applies a BT.709 gamma, an automatic
@@ -1239,22 +1231,28 @@ def add_halation(linear_rgb, intensity: float, radius: float):
 Run: `python -m unittest tests.test_effects -v`
 Expected: PASS, 6 tests
 
-- [ ] **Step 5: Delete the superseded code and tests**
+- [ ] **Step 5: Leave `film.py` alone**
 
-- Delete `add_halation` from `film.py`.
-- Delete the `TestHalationPrecision` class from `tests/test_defects.py`.
-- Delete `test_add_halation_boosts_red_highlight_bloom` from `tests/test_film.py`.
-- In `film.py`'s `process_photo`, change the `add_halation(...)` call to import from the new module: add `from filmlab.effects import add_halation` at the top and delete the old local definition. The `radius` param is now a fraction — Task 8 fixes the preset values; until then the halation will be enormous, which is expected and is why Task 8 immediately follows.
+Do **not** touch `film.py`, and do not delete its `add_halation`. The old one
+takes `radius` in *pixels* and runs in gamma space; the new one takes a
+*fraction* and runs in linear. Wiring the new signature into the old pipeline
+would silently produce enormous halation. Both exist until Task 8 swaps them,
+which is intentional and stated in the Global Constraints.
+
+Leave `tests/test_defects.py::TestHalationPrecision` and
+`tests/test_film.py::test_add_halation_boosts_red_highlight_bloom` in place —
+they still guard the old function, which is still live. Task 8 deletes the old
+function and its tests together.
 
 - [ ] **Step 6: Run the full suite**
 
 Run: `python -m unittest discover -s tests`
-Expected: OK
+Expected: OK (new effects tests pass; nothing existing changed)
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add filmlab/effects.py tests/test_effects.py film.py tests/test_defects.py tests/test_film.py
+git add filmlab/effects.py tests/test_effects.py
 git commit -m "Rewrite halation: additive, in linear light, resolution-independent
 
 Halation is light that punched through the emulsion, reflected off the base,
@@ -1418,21 +1416,23 @@ def add_grain(rgb, intensity: float, size: float, seed: int = 0):
 Run: `python -m unittest tests.test_effects -v`
 Expected: PASS, 13 tests
 
-- [ ] **Step 5: Delete the superseded code and tests**
+- [ ] **Step 5: Leave `film.py` alone**
 
-- Delete `add_grain` from `film.py`; import from `filmlab.effects` instead.
-- Delete `test_add_grain_zero_intensity_is_identity` from `tests/test_film.py`.
-- Delete `test_absurd_grain_size_does_not_allocate_the_universe` from `tests/test_defects.py` (superseded by `test_absurd_size_does_not_explode`).
+Do **not** touch `film.py`, and do not delete its `add_grain`. The old one takes
+`size` in *pixels*; the new one takes a *fraction of the short edge*. Both exist
+until Task 8, per the Global Constraints. Leave the old function's tests in
+`tests/test_film.py` and `tests/test_defects.py` in place — they still guard live
+code.
 
 - [ ] **Step 6: Run the full suite**
 
 Run: `python -m unittest discover -s tests`
-Expected: OK
+Expected: OK (new grain tests pass; nothing existing changed)
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add filmlab/effects.py tests/test_effects.py film.py tests/test_film.py tests/test_defects.py
+git add filmlab/effects.py tests/test_effects.py
 git commit -m "Rewrite grain: monochrome, midtone-peaked, isotropic, seeded
 
 Three things were wrong. The noise was generated independently per channel,
@@ -1451,10 +1451,13 @@ batch does not boil. Size is a fraction of the short edge."
 ### Task 8: Wire the pipeline, and pull the trigger on `apply_film_color`
 
 **Files:**
-- Modify: `film.py` (rewrite `process_photo`, delete `apply_film_color` / `apply_exposure` / `apply_contrast`, re-point `BUILTIN_PRESETS`, delete the provenance comment)
-- Modify: `tests/test_film.py` (delete tests for the deleted maths; rewrite the pipeline-order test)
+- Modify: `film.py` — rewrite `process_photo`; delete `apply_film_color`, the old `apply_exposure`, `apply_contrast`, `_load_image`, `add_halation`, `add_grain`; re-point `BUILTIN_PRESETS`; delete the provenance comment
+- Modify: `tests/test_film.py` — delete tests for the deleted maths; rewrite the pipeline-order test
+- Modify: `tests/test_defects.py` — delete `TestHalationPrecision`, `TestExifOrientation`, `test_absurd_grain_size_does_not_allocate_the_universe` (all superseded; the rest stays)
 - Modify: `.gitignore`
 - Create: `luts/README.md`, `docs/extracting-a-lut.md`
+
+**This is the atomic swap.** Tasks 5–7 built the new modules alongside the old code and deliberately did not rewire anything, so the suite stayed green throughout. All the deletion happens here, in one commit, so the repo never sits in a half-migrated state.
 
 **Interfaces:**
 - Consumes: everything from Tasks 1–7
@@ -1538,9 +1541,26 @@ class TestPipeline(unittest.TestCase):
 Run: `python -m unittest tests.test_film -v`
 Expected: FAIL — `apply_film_color` still exists, `apply_exposure` is still additive
 
-- [ ] **Step 3: Rewrite `film.py`'s pipeline section**
+- [ ] **Step 3: Delete every superseded function and its tests**
 
-Delete from `film.py`: `apply_film_color`, `apply_contrast`, the old `apply_exposure`, the provenance comment block (the `# Derived from a scan of 45 shoot folders...` lines and the two scene-family paragraphs), and any leftover imports of `ImageFilter`.
+Tasks 5–7 deliberately left the old code live so the suite stayed green. This is where all of it goes, in one atomic swap.
+
+Delete from `film.py`:
+- `apply_film_color` — the hand-tuned maths, the whole point of this plan
+- the old `apply_exposure` (additive) and `apply_contrast` — both are replaced below
+- `_load_image` — superseded by `filmlab.loader.load_image` (Task 5)
+- `add_halation` — superseded by `filmlab.effects.add_halation` (Task 6)
+- `add_grain` — superseded by `filmlab.effects.add_grain` (Task 7)
+- the provenance comment block (the `# Derived from a scan of 45 shoot folders…` lines and the two scene-family paragraphs)
+- any leftover import of `ImageFilter`
+
+Delete these tests, which guard functions that no longer exist:
+- `tests/test_film.py`: `test_apply_exposure_clips_into_valid_range`, `test_apply_film_color_strength_zero_is_identity`, `test_apply_film_color_pushes_midtones_warmer`, `test_add_grain_zero_intensity_is_identity`, `test_add_halation_boosts_red_highlight_bloom`, and the old `test_process_photo_applies_pipeline_in_expected_order`
+- `tests/test_defects.py`: `TestHalationPrecision`, `TestExifOrientation`, and `test_absurd_grain_size_does_not_allocate_the_universe`
+
+Their replacements already exist in `tests/test_loader.py`, `tests/test_effects.py`, and `tests/test_lut.py`. Everything else in `test_defects.py` — the preset-persistence, param-validation, and route-hardening tests — stays: it guards code this plan does not touch.
+
+**After deleting, run `python -m unittest discover -s tests` and expect failures.** That is correct at this moment; the rest of this task makes it green again.
 
 Replace the pipeline section with:
 

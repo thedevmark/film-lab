@@ -1,104 +1,96 @@
-"""Film Lab pipeline — photo style processing with mathematical film rendering, grain, and halation."""
+"""Film Lab pipeline — photo style processing with a measured film LUT, grain, and halation."""
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
+import logging
 import math
 import os
 import tempfile
 import threading
 from pathlib import Path
 
-from PIL import Image, ImageOps
+import numpy as np
+from PIL import Image
 from flask import request, jsonify, send_file
+
+from filmlab.effects import add_grain, add_halation
+from filmlab.loader import IMAGE_EXTENSIONS, RAW_EXTENSIONS, SCENE, load_image
+from filmlab.lut import apply_lut, identity_cube, load_hald
+from filmlab.tone import highlight_rolloff, hue_preserving_clip, srgb_encode
+
+logger = logging.getLogger(__name__)
 
 # ── Built-in presets ─────────────────────────────────────────────────────────
 # Built-ins live in code only — cannot be overwritten by the user.
 #
-# Derived from a scan of 45 shoot folders / 2,602 raw-to-edited pairs from a
-# personal library (2023-2026). Two measured scene families:
+# These are aesthetic starting points, not measurements.
 #
-#   Ambient Film — daylight/ambient sets:
-#     avg luminance −6.9 units, blue reduced most (B > G > R), sat +4.1pp,
-#     shadow crush +3.1pp, contrast essentially flat.
-#     → darker, denser, warm-biased, moodier blacks.
+# An earlier version of this file claimed they were "derived from a scan of 45
+# shoot folders / 2,602 raw-to-edited pairs". That claim did not survive review:
+# mean luminance, per-channel means, saturation and shadow percentile carry no
+# information at all about grain amplitude, grain size, halation radius, or
+# grade strength — five of the seven parameters were never derivable from the
+# statistics they were attributed to. The two that were have an unexcluded
+# alternative explanation in crop bias (photographers crop toward the subject
+# and away from blown edges, which moves mean luminance on its own).
 #
-#   Flash Film — event/flash sets:
-#     avg luminance +9.9 units, all channels lift equally (no forced warmth),
-#     contrast +8.9, sat −1.3pp, shadow barely touched.
-#     → brighter, punchier, colour-neutral, highlights preserved.
+# exposure_bias and contrast_strength are deliberately 0 in every preset. The
+# LUT carries the colour; exposure is per-photo and always was.
 
 BUILTIN_PRESETS = {
-    # ── Your signature looks ──────────────────────────────────────────────────
     "Ambient Film": {
+        "lut":                "kodak_gold_200",
         "grade_strength":     0.85,
-        "exposure_bias":     -0.025,
-        "contrast_strength":  0.00,
-        "grain_intensity":    0.065,
-        "grain_size":         3,
+        "exposure_bias":      0.0,
+        "contrast_strength":  0.0,
+        "grain_intensity":    0.022,
+        "grain_size":         0.0018,
         "halation_intensity": 0.50,
-        "halation_radius":    38,
+        "halation_radius":    0.010,
     },
     "Flash Film": {
+        "lut":                "kodak_gold_200",
         "grade_strength":     0.50,
-        "exposure_bias":      0.040,
-        "contrast_strength":  0.20,
-        "grain_intensity":    0.040,
-        "grain_size":         2,
+        "exposure_bias":      0.0,
+        "contrast_strength":  0.0,
+        "grain_intensity":    0.014,
+        "grain_size":         0.0012,
         "halation_intensity": 0.30,
-        "halation_radius":    45,
-    },
-    # ── Fuji Gold 400 reference ───────────────────────────────────────────────
-    "Fuji Gold 400 — Standard": {
-        "grade_strength":     0.85,
-        "exposure_bias":      0.00,
-        "contrast_strength":  0.00,
-        "grain_intensity":    0.055,
-        "grain_size":         3,
-        "halation_intensity": 0.45,
-        "halation_radius":    38,
-    },
-    "Fuji Gold 400 — Subtle": {
-        "grade_strength":     0.50,
-        "exposure_bias":      0.00,
-        "contrast_strength":  0.00,
-        "grain_intensity":    0.030,
-        "grain_size":         2,
-        "halation_intensity": 0.20,
-        "halation_radius":    25,
+        "halation_radius":    0.012,
     },
 }
-
-RAW_EXTENSIONS   = {".arw", ".cr2", ".cr3", ".nef", ".orf", ".raf", ".dng", ".rw2", ".pef"}
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".bmp"}
-MAX_LONG_EDGE    = 6000
 
 # ── Parameter validation ──────────────────────────────────────────────────────
 # Params arrive as untrusted JSON from the browser and from the presets file.
 # They are coerced and clamped here, at the boundary, before any of them reach
-# numpy. grain_size in particular is load-bearing: add_grain() allocates a
-# size x size array independent of the image, so an unbounded value asks for
-# arbitrary memory from an arbitrarily small photo.
+# numpy or the filesystem. grain_size and halation_radius both scale a Gaussian
+# kernel, so an unbounded value asks for arbitrary work from an arbitrarily
+# small photo; `lut` reaches the filesystem as a path component.
 
 PARAM_SPEC = {
     "grade_strength":     (float, 0.0,   1.0),
-    "exposure_bias":      (float, -1.0,  1.0),
+    "exposure_bias":      (float, -5.0,  5.0),    # EV stops, not an offset
     "contrast_strength":  (float, -1.0,  1.0),
-    "grain_intensity":    (float, 0.0,   1.0),
-    "grain_size":         (int,   1,     64),
+    "grain_intensity":    (float, 0.0,   0.10),  # 0.02 ~= 5 levels of 8-bit std
+    "grain_size":         (float, 0.0,   0.05),   # fraction of the short edge
     "halation_intensity": (float, 0.0,   1.0),
-    "halation_radius":    (float, 0.0,   200.0),
+    "halation_radius":    (float, 0.0,   0.10),   # fraction of the long edge
+    "seed":               (int,   0,     2 ** 31 - 1),
 }
 
 DEFAULT_PARAMS = {
+    "lut":                "kodak_gold_200",
     "grade_strength":     0.85,
     "exposure_bias":      0.0,
     "contrast_strength":  0.0,
-    "grain_intensity":    0.055,
-    "grain_size":         3,
+    "grain_intensity":    0.018,
+    "grain_size":         0.0015,
     "halation_intensity": 0.45,
-    "halation_radius":    38.0,
+    "halation_radius":    0.010,
+    "seed":               0,   # 0 == auto: derive it from the file. See _seed_from_file.
 }
 
 
@@ -121,236 +113,173 @@ def coerce_params(params) -> dict:
         if not math.isfinite(number):
             raise ValueError(f"{key}: must be finite")
         clean[key] = max(low, min(high, number))
+
+    # `lut` is a string, so it cannot go through the numeric spec above. It is
+    # also the one param that becomes a path component, so it is restricted to a
+    # simple name — no separators, no dots, nothing that can climb out of luts/.
+    lut_name = params.get("lut", DEFAULT_PARAMS["lut"])
+    if not isinstance(lut_name, str) or not lut_name.replace("_", "").replace("-", "").isalnum():
+        raise ValueError("lut: expected a simple name")
+    clean["lut"] = lut_name
     return clean
 
 
-_NUMPY = None
+# ── LUTs ──────────────────────────────────────────────────────────────────────
+
+LUT_DIR = Path(__file__).parent / "luts"
+
+GREY_SCENE = 0.18    # linear scene middle grey
+GREY_DISPLAY = 0.18  # where we want it to land before the LUT
+
+# Keyed on the FILE's identity, not the LUT's name: a name is not stable enough
+# to cache under. Dropping a freshly extracted LUT into luts/private/ replaces
+# the file behind a name that has already been rendered with, and a name-keyed
+# entry would go on serving the old table for the life of the process.
+_LUT_CACHE: dict[tuple, np.ndarray] = {}
 
 
-def _require_numpy():
-    global _NUMPY
-    if _NUMPY is None:
-        try:
-            import numpy as np
-        except ImportError as exc:
-            raise RuntimeError("numpy is not installed — Film Lab is unavailable until its dependencies are installed.") from exc
-        _NUMPY = np
-    return _NUMPY
+def get_lut(name: str) -> np.ndarray:
+    """Load a LUT by name, from luts/private/ first, then luts/open/."""
+    for folder in ("private", "open"):
+        path = LUT_DIR / folder / f"{name}.png"
+        if path.exists():
+            stat = path.stat()
+            # A replaced file gets a new mtime (or a new size), and so a new key.
+            key = (str(path), stat.st_mtime_ns, stat.st_size)
+            if key not in _LUT_CACHE:
+                _LUT_CACHE[key] = load_hald(path)
+            return _LUT_CACHE[key]
+
+    # No LUT installed: fall through to a no-op rather than failing the render.
+    #
+    # NEVER cache this. The documented workflow (docs/extracting-a-lut.md) is
+    # "drop a file into luts/private/ and re-render", so the miss is expected to
+    # stop being a miss without a restart. A cached identity would silently
+    # swallow the new LUT — and a LUT doing nothing is indistinguishable from a
+    # LUT that is wrong, which is what sends someone off to re-extract a LUT
+    # that was fine. The cube is 2x2x2 and the exists() checks are two stats;
+    # both are free next to decoding the photo.
+    return identity_cube(2)
 
 
 # ── Exposure and contrast ─────────────────────────────────────────────────────
 
-def apply_exposure(img, bias):
-    np = _require_numpy()
-    if bias == 0.0:
-        return img
-    return np.clip(img + bias, 0.0, 1.0)
+def apply_exposure(linear_rgb, ev: float):
+    """Exposure is a multiply in linear light.
+
+    Doubling the photons doubles the linear value. That preserves the ratios
+    between channels, and so preserves hue and saturation exactly. Adding a
+    constant to gamma-encoded values — which is what this used to do — is a
+    black-level lift whose effective gain varies per channel, which is why it
+    shifted hue.
+
+    Nothing is clipped here: the highlight rolloff downstream needs the
+    headroom this creates.
+    """
+    if ev == 0.0:
+        return linear_rgb
+    return linear_rgb * np.float32(2.0 ** ev)
 
 
-def apply_contrast(img, strength):
-    np = _require_numpy()
+def apply_contrast(rgb, strength: float):
+    """Post-LUT user finish. Never baked into a film preset — the CLUT is the look."""
     if strength == 0.0:
-        return img
-    return np.clip(0.5 + (img - 0.5) * (1.0 + strength), 0.0, 1.0)
+        return rgb
+    return np.clip(0.5 + (rgb - 0.5) * np.float32(1.0 + strength), 0.0, 1.0)
 
 
-# ── Fuji Gold 400 colour rendering ────────────────────────────────────────────
+# ── Grain seed ────────────────────────────────────────────────────────────────
 
-def apply_film_color(img, strength):
-    np = _require_numpy()
-    if strength <= 0:
-        return img
+def _seed_from_file(input_path: Path) -> int:
+    """Derive a grain seed from the input file's bytes.
 
-    luma = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
-    result = img.copy()
+    seed=0 is the "auto" sentinel, and it used to mean literally zero: nothing in
+    DEFAULT_PARAMS, the presets or the UI ever set it, so every photo of a given
+    size drew the SAME noise field. That is fixed-pattern noise across a whole
+    shoot — invisible in one frame and obvious the moment the set is viewed
+    together.
 
-    # Lift blacks — film base fog raises the shadow floor
-    shadow_lift = 0.022
-    result = result * (1.0 - shadow_lift * 2.0) + shadow_lift
-
-    # Per-channel tone response
-    result[:, :, 0] = np.power(result[:, :, 0].clip(1e-6, 1.0), 0.88)
-    result[:, :, 1] = np.power(result[:, :, 1].clip(1e-6, 1.0), 0.96)
-    result[:, :, 2] = np.power(result[:, :, 2].clip(1e-6, 1.0), 1.18)
-
-    # Shadow crossover — green-cyan bleed in deepest shadows
-    shadow_mask = np.clip(1.0 - luma / 0.25, 0.0, 1.0) ** 2
-    result[:, :, 0] -= shadow_mask * 0.012
-    result[:, :, 1] += shadow_mask * 0.048
-    result[:, :, 2] += shadow_mask * 0.022
-
-    # Midtone warmth
-    mid_mask = np.exp(-((luma - 0.40) ** 2) / (2 * 0.18 ** 2))
-    result[:, :, 0] += mid_mask * 0.032
-    result[:, :, 1] += mid_mask * 0.018
-    result[:, :, 2] -= mid_mask * 0.022
-
-    # Orange-red saturation boost
-    orange = np.clip(result[:, :, 0] - np.maximum(result[:, :, 1], result[:, :, 2]), 0.0, 1.0)
-    result[:, :, 0] += orange * 0.055
-    result[:, :, 2] -= orange * 0.030
-
-    # Highlight warmth
-    hi_mask = np.clip((luma - 0.70) * 3.5, 0.0, 1.0)
-    result[:, :, 0] += hi_mask * 0.014
-    result[:, :, 1] += hi_mask * 0.006
-    result[:, :, 2] -= hi_mask * 0.010
-
-    return np.clip(strength * result + (1.0 - strength) * img, 0.0, 1.0)
-
-
-# ── Grain ─────────────────────────────────────────────────────────────────────
-
-def add_grain(img, intensity, size):
-    np = _require_numpy()
-    if intensity <= 0:
-        return img
-
-    h, w = img.shape[:2]
-    # Clamp against the image: floor division below pins nh/nw at 1 once size
-    # exceeds the image, but np.repeat then re-expands by size regardless, so
-    # the intermediate would be size x size x 3 no matter how small the photo.
-    size = max(1, min(int(size), h, w))
-    nh, nw = max(1, h // size), max(1, w // size)
-
-    small = np.random.normal(0.0, intensity, (nh, nw, 3)).astype(np.float32)
-    coarse = np.repeat(np.repeat(small, size, axis=0), size, axis=1)
-    ph = max(0, h - coarse.shape[0])
-    pw = max(0, w - coarse.shape[1])
-    if ph or pw:
-        coarse = np.pad(coarse, ((0, ph), (0, pw), (0, 0)), mode="wrap")
-    coarse = coarse[:h, :w]
-
-    luma = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
-    weight = (1.0 - luma * 0.85)[..., np.newaxis]
-    coarse *= weight
-
-    return np.clip(img + coarse, 0.0, 1.0)
-
-
-# ── Halation ──────────────────────────────────────────────────────────────────
-
-def _box_blur_axis(arr, radius, axis):
-    """One box-blur pass along an axis, O(n) in the image and independent of radius."""
-    np = _require_numpy()
-    if radius < 1:
-        return arr
-
-    moved = np.moveaxis(arr, axis, 0)
-    n = moved.shape[0]
-    padded = np.pad(moved, [(radius, radius)] + [(0, 0)] * (moved.ndim - 1), mode="edge")
-    cumulative = np.cumsum(padded, axis=0, dtype=np.float32)
-    zero = np.zeros((1,) + cumulative.shape[1:], dtype=np.float32)
-    cumulative = np.concatenate([zero, cumulative], axis=0)
-
-    window = 2 * radius + 1
-    out = (cumulative[window:window + n] - cumulative[:n]) / np.float32(window)
-    return np.moveaxis(out, 0, axis)
-
-
-def _gaussian_blur(arr, sigma):
-    """Float Gaussian blur, approximated by three box passes.
-
-    PIL cannot blur float images (mode "F" raises), and blurring through uint8
-    is what broke halation: a Gaussian spreads a highlight's energy over
-    ~sigma^2 px, so a small highlight's blurred peak fell below 1/255 and
-    rounded to zero. Three box passes converge on a Gaussian by the central
-    limit theorem — the same trick PIL uses internally, in float.
+    Hashing the file keeps both properties that matter: a photo renders the same
+    way every time (so a re-export matches the preview), and no two photos share
+    a field. An explicit non-zero seed still overrides this.
     """
-    np = _require_numpy()
-    if sigma <= 0:
-        return arr
-
-    # Box width whose 3-pass variance matches the target Gaussian.
-    width = math.sqrt(12.0 * sigma * sigma / 3.0 + 1.0)
-    radius = max(1, int(round((width - 1) / 2.0)))
-
-    out = arr.astype(np.float32, copy=True)
-    for _ in range(3):
-        out = _box_blur_axis(out, radius, axis=0)
-        out = _box_blur_axis(out, radius, axis=1)
-    return out
-
-
-def add_halation(img, intensity, radius):
-    """Highlights scatter through the emulsion, reflect off the base, re-expose the film.
-
-    Additive, and red-dominant: the red-sensitive layer sits deepest, so it
-    catches most of the light that bounced. Blue is left alone.
-    """
-    np = _require_numpy()
-    if intensity <= 0:
-        return img
-
-    highlights = np.clip(img - 0.75, 0.0, 1.0) * 4.0
-    red = (highlights[:, :, 0] * 0.78
-           + highlights[:, :, 1] * 0.17
-           + highlights[:, :, 2] * 0.05)
-
-    # Blur is linear, so the green bloom is just a scaled copy of the red one —
-    # blurring it separately would double the work and buy nothing.
-    blurred_red = _gaussian_blur(red, float(radius))
-
-    bloom = np.zeros_like(img)
-    bloom[:, :, 0] = blurred_red
-    bloom[:, :, 1] = blurred_red * 0.20
-
-    return np.clip(img + bloom * intensity, 0.0, 1.0)
-
-
-# ── Image loading ─────────────────────────────────────────────────────────────
-
-def _load_image(path: Path):
-    np = _require_numpy()
-    suffix = path.suffix.lower()
-
-    if suffix in RAW_EXTENSIONS:
-        try:
-            import rawpy
-        except ImportError:
-            raise RuntimeError("rawpy is not installed — RAW file support unavailable.")
-        with rawpy.imread(str(path)) as raw:
-            rgb = raw.postprocess(use_camera_wb=True, output_bps=8)
-        pil = Image.fromarray(rgb, mode="RGB")  # rawpy already applies orientation
-    else:
-        # A vertically-held shot is stored in landscape layout plus an
-        # Orientation tag. Without this the photo comes back rotated 90°, since
-        # the output JPEG carries no EXIF to compensate.
-        pil = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
-
-    # Downscale on the PIL object: converting to float32 first would cost 4x the
-    # uint8 size at full resolution, before the cap ever applied.
-    w, h = pil.size
-    long_edge = max(h, w)
-    if long_edge > MAX_LONG_EDGE:
-        scale = MAX_LONG_EDGE / long_edge
-        pil = pil.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
-
-    return np.asarray(pil, dtype=np.float32) / 255.0
+    digest = hashlib.blake2b(input_path.read_bytes(), digest_size=4).digest()
+    return int.from_bytes(digest, "big")
 
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 def process_photo(input_path: Path, params: dict) -> bytes:
-    """Order: load → exposure → colour grade → contrast → halation → grain → export."""
+    """load -> exposure -> [if scene] grey-point scale -> halation -> highlights
+    -> encode -> LUT -> contrast -> grain -> JPEG.
+
+    The highlight stage is where the state tag earns its keep, and the two states
+    need opposite things:
+
+      SCENE (a RAW) is scene-linear, with real headroom above 1.0 that nothing
+      has rendered yet. It needs a soft shoulder — that shoulder IS the
+      scene-to-display render.
+
+      DISPLAY (a JPEG) has already been rendered by the camera. At EV=0 nothing
+      in it exceeds 1.0, so the correct transform is the IDENTITY: the LUT must
+      receive exactly the sRGB space it was authored against, and a shoulder here
+      is a second tone curve in front of it. Only an exposure push can send
+      values over 1.0, and those come back down with a hue-preserving clip.
+    """
     params = coerce_params(params)
 
-    img = _load_image(input_path)
-    img = apply_exposure(img, params["exposure_bias"])
-    img = apply_film_color(img, params["grade_strength"])
-    img = apply_contrast(img, params["contrast_strength"])
-    img = add_halation(
-        img,
+    linear, state = load_image(input_path)
+
+    linear = apply_exposure(linear, params["exposure_bias"])
+
+    if state == SCENE:
+        # Land scene middle grey where the CLUTs expect it. This is the whole of
+        # the scene-to-display exposure mapping: no look, no contrast curve. The
+        # CLUTs were authored against a neutral render, and anything opinionated
+        # here would be counted twice.
+        #
+        # BEFORE halation, not after: HALATION_THRESHOLD (0.70 linear) and the
+        # rolloff knee (0.8 linear) are both ABSOLUTE values, so they have to see
+        # the same exposure. With the scale between them, one RAW highlight would
+        # be tested for halation at one exposure and rolled off at another.
+        linear = linear * np.float32(GREY_DISPLAY / GREY_SCENE)
+
+    linear = add_halation(
+        linear,
         intensity=params["halation_intensity"],
         radius=params["halation_radius"],
     )
-    img = add_grain(
-        img,
+
+    if state == SCENE:
+        linear = highlight_rolloff(linear)
+    else:
+        linear = hue_preserving_clip(linear)
+
+    # Both branches already land in [0,1], so this clip is not shaping anything —
+    # it is float32 hygiene. srgb_encode's power function can return 1.0 plus an
+    # ULP at the top of the range, and uint8 conversion downstream is unforgiving
+    # about it. The tone decision was made above, deliberately, per state.
+    rgb = np.clip(srgb_encode(linear), 0.0, 1.0)
+
+    rgb = apply_lut(rgb, get_lut(params["lut"]), strength=params["grade_strength"])
+    # Contrast is AFTER the LUT: the CLUTs were authored against a neutral,
+    # standard-contrast render, so look-contrast in front of them is counted
+    # twice. Grain is after contrast: it is the texture the emulsion leaves on a
+    # finished frame, not a signal that gets graded.
+    rgb = apply_contrast(rgb, params["contrast_strength"])
+    seed = params["seed"] or _seed_from_file(input_path)
+    rgb = add_grain(
+        rgb,
         intensity=params["grain_intensity"],
         size=params["grain_size"],
+        seed=seed,
     )
 
-    pil_out = Image.fromarray((img * 255).clip(0, 255).astype("uint8"))
+    # ROUND, don't truncate. astype("uint8") floors, which biases every pixel
+    # down by half a level and — the reason it matters here — throws away the top
+    # code value outright: a float32 sRGB decode/encode round trip of pure white
+    # lands a hair under 1.0, and 254.99998 floors to 254. White has to stay 255.
+    pil_out = Image.fromarray(np.rint(rgb * 255.0).clip(0, 255).astype(np.uint8))
     buf = io.BytesIO()
     pil_out.save(buf, format="JPEG", quality=95)
     buf.seek(0)
@@ -360,6 +289,46 @@ def process_photo(input_path: Path, params: dict) -> bytes:
 # ── Preset persistence ────────────────────────────────────────────────────────
 
 _PRESETS_LOCK = threading.Lock()
+
+# grain_size and halation_radius changed units. They used to be PIXEL counts
+# (grain_size: 3, halation_radius: 38); they are now FRACTIONS of an edge, with
+# maxima of 0.05 and 0.10. A preset written before that change and fed straight
+# through coerce_params clamps BOTH to their maximum, which on a 4000x3000 photo
+# is a 150px grain sigma and a 400px halation sigma — the render is destroyed.
+#
+# The migration cannot live in coerce_params: that is a boundary clamp on
+# untrusted input and has no way to tell a v1 file from a v2 request. It lives
+# here, where "this value came out of a stored file" is known.
+#
+# Detection is by range, which is unambiguous: the new maxima are 0.05 and 0.10,
+# and the old pixel values were >= 1 and >= 5. Anything above the new maximum in
+# a stored preset is therefore a v1 pixel count.
+#
+# There is no conversion. A pixel count only becomes a fraction if you know the
+# dimensions of the image it was tuned on, and those are not in the file. The
+# default is the honest answer; an invented conversion is not.
+_LEGACY_PIXEL_PARAMS = ("grain_size", "halation_radius")
+
+
+def _migrate_legacy_units(data: dict) -> dict:
+    for preset_name, params in data.items():
+        if not isinstance(params, dict):
+            continue
+        for key in _LEGACY_PIXEL_PARAMS:
+            value = params.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            _cast, _low, high = PARAM_SPEC[key]
+            if value > high:
+                logger.warning(
+                    "Preset %r: %s=%s is a pixel count from an older version "
+                    "(%s is now a fraction of an edge, max %s). Falling back to "
+                    "the default of %s — the original value cannot be converted "
+                    "without the dimensions of the photo it was tuned on.",
+                    preset_name, key, value, key, high, DEFAULT_PARAMS[key],
+                )
+                params[key] = DEFAULT_PARAMS[key]
+    return data
 
 
 def _load_user_presets(presets_file: Path, tolerate_corrupt: bool = True) -> dict:
@@ -382,7 +351,7 @@ def _load_user_presets(presets_file: Path, tolerate_corrupt: bool = True) -> dic
         if tolerate_corrupt:
             return {}
         raise ValueError("presets file is not a JSON object")
-    return data
+    return _migrate_legacy_units(data)
 
 
 def _save_user_presets(presets_file: Path, user_presets: dict):

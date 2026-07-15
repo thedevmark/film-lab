@@ -32,48 +32,84 @@ RAW support (`.arw`, `.cr2`, `.cr3`, `.nef`, `.raf`, `.dng`, …) comes from
 
 | Control | What it does |
 | --- | --- |
-| **Grade strength** | How far to push the film color response |
-| **Exposure** | Brightness offset |
-| **Contrast** | S-curve around mid-gray |
-| **Grain** | Intensity and size, weighted by luminance |
-| **Halation** | Intensity and radius of the red highlight bloom |
+| **Grade strength** | How far to blend in the film LUT |
+| **Exposure** | EV stops — a multiply in linear light, so hue is preserved |
+| **Contrast** | S-curve around mid-gray, applied *after* the LUT |
+| **Grain** | Intensity, and size as a fraction of the short edge |
+| **Halation** | Intensity, and radius as a fraction of the long edge |
+
+Sizes are fractions rather than pixel counts so the look is the same on a
+downscaled preview and on a full-resolution export.
 
 Presets ship as built-ins and can't be overwritten. Anything you dial in
 yourself can be saved alongside them, and lives at
 `%LOCALAPPDATA%\film-lab\film_presets.json` on Windows or `./.appstate/` elsewhere.
 
-## Where the color comes from — and where it's going
+## Where the color comes from
 
-Be aware of what this currently is. `apply_film_color()` in `film.py` is
-**hand-tuned math, not a measured film profile**: per-channel gamma powers, a
-Gaussian midtone-warmth mask, a shadow crossover term. It produces a pleasant
-warm negative-film rendering, and it is emphatically an approximation.
+From a **3D LUT** — a measured mapping from every input color to an output
+color, applied with tetrahedral interpolation. It is the same thing DxO FilmPack
+and darktable's `lut3d` module do. There is no hand-tuned color math in the
+pipeline, by design: a guess at what film does is a guess, however pleasant.
 
-Real film emulation — what DxO FilmPack and darktable's `lut3d` module do — uses
-a **3D LUT**: a measured mapping from every input color to an output color. That
-is the direction this is headed:
+The pipeline, in order:
 
-- [ ] Replace the hand-tuned grade with a HaldCLUT loader (trilinear interpolation)
-- [ ] Move exposure and halation into **linear light**, where they're physical —
-      exposure is a multiply (`× 2^EV`), not the additive offset it is today,
-      and halation is per-channel scatter with σ<sub>R</sub> > σ<sub>G</sub> > σ<sub>B</sub>
-- [ ] Apply the LUT *after* tone mapping, in gamma-encoded sRGB, clipped to
-      [0,1] — which is where film LUTs are defined and where darktable applies them
-- [ ] Weight grain toward the **midtones** via a paper-response curve, rather
-      than toward the shadows as it is now
-- [ ] Batch: folder in, folder out, resumable
+```
+load -> (linear, scene|display)
+exposure      linear x 2**EV
+[if scene]    grey-point scale — neutral, no look
+halation      linear, additive, red-dominant
+highlights    scene: soft shoulder   display: hue-preserving clip
+srgb encode   + clip to [0,1]
+LUT           tetrahedral, strength blend
+contrast      post-LUT user finish, 0 in every preset
+grain         last — texture on a finished frame
+-> JPEG
+```
 
-LUTs are **bring-your-own**. This repo will ship a loader and an openly-licensed
-default, and will not redistribute profiles extracted from commercial software.
-If you own a licensed copy of an editor, extracting a LUT from it for your own
-use is your business; publishing that LUT is not something this project will do
-for you.
+The **highlight** stage is the one place the scene/display tag changes the
+render, and the two states need opposite things. A RAW is scene-linear, with real
+headroom above 1.0 that nothing has rendered yet — it needs a soft shoulder, and
+that shoulder *is* the scene-to-display render. A JPEG has already been rendered
+by the camera: at EV=0 nothing in it exceeds 1.0, so the correct transform is the
+**identity**, and there is no gentler option — any monotonic map that is the
+identity on [0,1] and lands in [0,1] *is* `min(x, 1)`. Only an exposure push can
+send a JPEG over 1.0, and those values come back down by scaling the whole
+triplet rather than clipping each channel, so hue survives. A shoulder here would
+crush white to grey and stack a second tone curve in front of the LUT.
+
+The grey-point scale runs *before* halation because halation's threshold and the
+shoulder's knee are both absolute linear values: they have to see one exposure.
+
+Contrast sits after the LUT because the CLUTs were authored against a neutral,
+standard-contrast render; look-contrast in front of them would be counted twice.
+
+Grain is seeded from a hash of the input file, so a photo renders identically
+every time while no two photos in a shoot share a noise field. An explicit
+non-zero `seed` overrides that.
+
+**Kodak Gold 200 ships with the repo** (`luts/open/`), baked from
+[spektrafilm](https://github.com/andreavolpato/spektrafilm) — a spectral
+photochemical simulation built from measured datasheet density curves, not a
+hand-tuned approximation. So it works out of the box.
+
+You can add your own to `luts/private/`, which is gitignored — see
+[docs/extracting-a-lut.md](docs/extracting-a-lut.md). This repo will not
+redistribute profiles extracted from commercial software. If you own a licensed
+copy of an editor, extracting a LUT from it for your own use is your business;
+publishing that LUT is not something this project will do for you.
+
+Still to come: batch — folder in, folder out, resumable.
 
 ## Files
 
-- `film.py` — the pipeline (exposure, color, contrast, halation, grain), presets, routes
+- `film.py` — pipeline order, params, presets, routes
+- `filmlab/` — `loader` (linear + scene/display state), `tone` (transfer functions,
+  rolloff), `lut` (HaldCLUT + tetrahedral interpolation), `effects` (halation, grain), `blur`
 - `app.py` — Flask host, port discovery, state paths
 - `static/` — single-page UI
+- `luts/` — HaldCLUT PNGs; `private/` is gitignored
+- `tools/make_hald.py` — writes an identity HaldCLUT to render through an editor
 - `tools/make_icon.py` — regenerates the icon from `static/img/app-icon.svg`
 - `tests/` — `python -m unittest discover -s tests`
 
@@ -85,8 +121,18 @@ for you.
 
 ## License
 
-Code is [MIT](LICENSE). Any LUTs or profiles you add carry their own licenses —
-check them.
+Code is [MIT](LICENSE).
+
+**One exception:** `luts/open/kodak_gold_200.png` is baked from
+[spektrafilm](https://github.com/andreavolpato/spektrafilm)'s measured film
+profile and is **[CC BY-SA 4.0](luts/open/LICENSE)**, not MIT — spektrafilm's
+license explicitly treats a LUT as a direct encoding of its profile data, so
+share-alike follows it. See [luts/open/ATTRIBUTION.md](luts/open/ATTRIBUTION.md),
+and [docs/baking-the-default-lut.md](docs/baking-the-default-lut.md) to reproduce it.
+
+Photographs you make with it are yours. No copyleft reaches your images.
+
+Any LUTs you add yourself carry their own licenses — check them.
 
 Film stock names are trademarks of their respective owners. Nothing here is
 affiliated with, endorsed by, or derived from Kodak, Fujifilm, or DxO.
