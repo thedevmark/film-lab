@@ -45,6 +45,12 @@ Presets ship as built-ins and can't be overwritten. Anything you dial in
 yourself can be saved alongside them, and lives at
 `%LOCALAPPDATA%\film-lab\film_presets.json` on Windows or `./.appstate/` elsewhere.
 
+**Batch a folder** applies the look you've dialled in to every photo in a
+directory — folder in, folder out. It processes one file at a time and skips
+anything already rendered, so you can stop and pick up where you left off, and
+outputs are written atomically so an interrupted run never leaves a truncated
+file behind.
+
 ## Where the color comes from
 
 From a **3D LUT** — a measured mapping from every input color to an output
@@ -99,13 +105,13 @@ redistribute profiles extracted from commercial software. If you own a licensed
 copy of an editor, extracting a LUT from it for your own use is your business;
 publishing that LUT is not something this project will do for you.
 
-Still to come: batch — folder in, folder out, resumable.
 
 ## Files
 
 - `film.py` — pipeline order, params, presets, routes
 - `filmlab/` — `loader` (linear + scene/display state), `tone` (transfer functions,
-  rolloff), `lut` (HaldCLUT + tetrahedral interpolation), `effects` (halation, grain), `blur`
+  rolloff), `lut` (HaldCLUT + tetrahedral interpolation), `effects` (halation, grain),
+  `batch` (folder-in/folder-out worker), `blur`
 - `app.py` — Flask host, port discovery, state paths
 - `static/` — single-page UI
 - `luts/` — HaldCLUT PNGs; `private/` is gitignored
