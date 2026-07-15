@@ -1,16 +1,17 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Film Lab">
   <!--
-    Film Lab brand mark — a 35mm frame lit gold.
+    Film Lab brand mark — a single 35mm frame lit gold.
 
-    House icon system: dark navy rounded-square shell (outer #0D1521 / inner
-    #162334, matching Alert! Alert!), one subject, tight palette, flat vector.
+    The mark is the film itself: a dark chip, a row of perforations top and
+    bottom, and a gold exposed window that nearly spans the strip — thin
+    borders, the way real film sits. No outer container; the chip is the whole
+    icon, on transparent.
 
-    The subject is a strip of 35mm film. The exposed frame sits at a true 3:2 —
-    a stills frame, not a cinema frame — and glows warm gold: the icon is the
-    product's own output. The red-orange bloom around it is halation, rendered
-    the way the pipeline renders it (blur the highlight, subtract it back out,
-    add what escaped). It runs red because long wavelengths scatter furthest,
-    which is why real halation is red.
+    The window glows warm gold: the icon is the product's own output. The
+    red-orange bloom around it is halation, rendered the way the pipeline
+    renders it (blur the highlight, subtract it back out, keep what escaped). It
+    runs red because long wavelengths scatter furthest, which is why real
+    halation is red.
 
     Raster assets are generated from this geometry by tools/make_icon.py.
   -->
@@ -23,46 +24,47 @@
 
     <!-- Halation: blur the frame, keep only the light that escaped its edge. -->
     <filter id="halation" x="-25%" y="-40%" width="150%" height="180%">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="34" result="bloom"/>
+      <feGaussianBlur in="SourceAlpha" stdDeviation="26" result="bloom"/>
       <feComposite in="bloom" in2="SourceAlpha" operator="out" result="escaped"/>
-      <feFlood flood-color="#FF7A33" flood-opacity="0.85"/>
+      <feFlood flood-color="#FF7A33" flood-opacity="0.9"/>
       <feComposite in2="escaped" operator="in"/>
     </filter>
 
-    <clipPath id="shell">
-      <rect width="1024" height="1024" rx="224"/>
+    <!-- The chip's silhouette clips everything: the glow stays on the film. -->
+    <clipPath id="strip">
+      <rect x="64" y="214" width="896" height="596" rx="26"/>
     </clipPath>
   </defs>
 
-  <!-- shell -->
-  <rect width="1024" height="1024" rx="224" fill="#0D1521"/>
-  <rect x="40" y="40" width="944" height="944" rx="200" fill="#162334"/>
+  <g clip-path="url(#strip)">
+    <!-- film chip -->
+    <rect x="64" y="214" width="896" height="596" rx="26" fill="#0B1220"/>
 
-  <g clip-path="url(#shell)">
-    <!-- film strip -->
-    <rect x="140" y="200" width="744" height="624" rx="28" fill="#0B1220"/>
+    <!-- halation bloom, kept on the chip around the window -->
+    <rect x="120" y="300" width="784" height="424" rx="12" filter="url(#halation)"/>
 
-    <!-- halation bloom, spilling past the strip the way real halation does -->
-    <rect x="221" y="318" width="582" height="388" rx="16" filter="url(#halation)"/>
+    <!-- exposed window, near the chip edges -->
+    <rect x="120" y="300" width="784" height="424" rx="12" fill="url(#goldFrame)"/>
 
-    <!-- exposed frame, true 3:2 -->
-    <rect x="221" y="318" width="582" height="388" rx="16" fill="url(#goldFrame)"/>
-
-    <!-- sprocket holes -->
+    <!-- perforations -->
     <g fill="#EEF4FA">
-      <rect x="182.9" y="232" width="74" height="56" rx="15"/>
-      <rect x="299.7" y="232" width="74" height="56" rx="15"/>
-      <rect x="416.6" y="232" width="74" height="56" rx="15"/>
-      <rect x="533.4" y="232" width="74" height="56" rx="15"/>
-      <rect x="650.3" y="232" width="74" height="56" rx="15"/>
-      <rect x="767.1" y="232" width="74" height="56" rx="15"/>
+      <rect x="120.0"   y="244" width="52" height="40" rx="10"/>
+      <rect x="224.571" y="244" width="52" height="40" rx="10"/>
+      <rect x="329.143" y="244" width="52" height="40" rx="10"/>
+      <rect x="433.714" y="244" width="52" height="40" rx="10"/>
+      <rect x="538.286" y="244" width="52" height="40" rx="10"/>
+      <rect x="642.857" y="244" width="52" height="40" rx="10"/>
+      <rect x="747.429" y="244" width="52" height="40" rx="10"/>
+      <rect x="852.0"   y="244" width="52" height="40" rx="10"/>
 
-      <rect x="182.9" y="736" width="74" height="56" rx="15"/>
-      <rect x="299.7" y="736" width="74" height="56" rx="15"/>
-      <rect x="416.6" y="736" width="74" height="56" rx="15"/>
-      <rect x="533.4" y="736" width="74" height="56" rx="15"/>
-      <rect x="650.3" y="736" width="74" height="56" rx="15"/>
-      <rect x="767.1" y="736" width="74" height="56" rx="15"/>
+      <rect x="120.0"   y="726" width="52" height="40" rx="10"/>
+      <rect x="224.571" y="726" width="52" height="40" rx="10"/>
+      <rect x="329.143" y="726" width="52" height="40" rx="10"/>
+      <rect x="433.714" y="726" width="52" height="40" rx="10"/>
+      <rect x="538.286" y="726" width="52" height="40" rx="10"/>
+      <rect x="642.857" y="726" width="52" height="40" rx="10"/>
+      <rect x="747.429" y="726" width="52" height="40" rx="10"/>
+      <rect x="852.0"   y="726" width="52" height="40" rx="10"/>
     </g>
   </g>
 </svg>
