@@ -19,3 +19,6 @@ output/
 # Your own extracted LUTs. Never committed — they may be derived from
 # commercial software you licensed, and that licence is yours, not the repo's.
 luts/private/
+
+# Superpowers SDD scratch (task briefs, reviews, ledger) — internal, never shipped
+.superpowers/
