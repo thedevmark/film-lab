@@ -18,6 +18,13 @@ punches through the emulsion and reflects off the film base.
 
 ## Run it
 
+**Windows:** grab `film-lab.exe` from the
+[latest release](https://github.com/thedevmark/film-lab/releases/latest) and
+double-click it — no install, it opens as a standalone app in its own window.
+Your own LUTs go in a `luts/private/` folder next to the exe.
+
+**From source:**
+
 ```bash
 pip install -r requirements.txt
 python app.py

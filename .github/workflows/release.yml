@@ -1,0 +1,64 @@
+# Push a v* tag and this builds the Windows exe and attaches it to a GitHub
+# release for that tag. The whole release process is:
+#
+#     git tag v0.3.0
+#     git push origin v0.3.0
+#
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Run tests
+        run: python -m unittest discover -s tests
+
+      - name: Build exe
+        run: pyinstaller film-lab.spec
+
+      - name: Smoke test the exe
+        shell: pwsh
+        run: |
+          $env:FILM_LAB_PORT = "3177"
+          $env:FILM_LAB_NO_WINDOW = "1"  # server mode: no native window on a CI runner
+          $proc = Start-Process -FilePath "dist\film-lab.exe" -PassThru
+          try {
+            $ok = $false
+            foreach ($i in 1..30) {
+              Start-Sleep -Seconds 1
+              try {
+                $resp = Invoke-WebRequest "http://localhost:3177/" -UseBasicParsing -TimeoutSec 2
+                if ($resp.StatusCode -eq 200) { $ok = $true; break }
+              } catch {}
+            }
+            if (-not $ok) { throw "exe never served the UI on port 3177" }
+            Write-Host "Smoke test passed: UI served with HTTP 200."
+          } finally {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Create release and attach exe
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          # Re-runs of the same tag land in the upload branch.
+          gh release create $tag dist/film-lab.exe --generate-notes ||
+            gh release upload $tag dist/film-lab.exe --clobber

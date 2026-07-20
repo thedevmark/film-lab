@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import sys
 import tempfile
 import threading
 from dataclasses import asdict as _dataclass_dict
@@ -130,6 +131,19 @@ def coerce_params(params) -> dict:
 
 LUT_DIR = Path(__file__).parent / "luts"
 
+
+def _lut_dirs() -> list[Path]:
+    """LUT search roots, highest priority first.
+
+    In a frozen build LUT_DIR points inside the unpacked bundle, which ships the
+    open LUTs but is a temp dir the user cannot add files to — so a luts/ folder
+    beside the exe is searched first, keeping the documented "drop a file into
+    luts/private/ and re-render" workflow alive.
+    """
+    if getattr(sys, "frozen", False):
+        return [Path(sys.executable).parent / "luts", LUT_DIR]
+    return [LUT_DIR]
+
 GREY_SCENE = 0.18    # linear scene middle grey
 GREY_DISPLAY = 0.18  # where we want it to land before the LUT
 
@@ -142,8 +156,9 @@ _LUT_CACHE: dict[tuple, np.ndarray] = {}
 
 def get_lut(name: str) -> np.ndarray:
     """Load a LUT by name, from luts/private/ first, then luts/open/."""
-    for folder in ("private", "open"):
-        path = LUT_DIR / folder / f"{name}.png"
+    candidates = (base / folder / f"{name}.png"
+                  for folder in ("private", "open") for base in _lut_dirs())
+    for path in candidates:
         if path.exists():
             stat = path.stat()
             # A replaced file gets a new mtime (or a new size), and so a new key.

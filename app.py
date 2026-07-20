@@ -90,7 +90,31 @@ def start_server(host: str = DEFAULT_HOST, port: int | None = None) -> int:
     return port
 
 
+def run_desktop(port: int) -> None:
+    """Standalone mode: Flask on a background thread, UI in a native window.
+
+    webview.start() blocks until the window is closed; the daemon server
+    thread dies with the process, so closing the window quits the app.
+    """
+    import webview
+
+    start_server(DEFAULT_HOST, port)
+    webview.create_window(
+        "Film Lab",
+        f"http://{DEFAULT_HOST}:{port}",
+        width=1280,
+        height=900,
+        min_size=(900, 600),
+    )
+    webview.start()
+
+
 if __name__ == "__main__":
     port = find_available_port(DEFAULT_HOST, DEFAULT_PORT)
-    print(f"Film Lab running on http://{DEFAULT_HOST}:{port}")
-    app.run(host=DEFAULT_HOST, port=port, debug=False, use_reloader=False, threaded=True)
+    # The frozen exe is a standalone desktop app. FILM_LAB_NO_WINDOW=1 forces
+    # plain server mode (CI smoke tests, or running headless).
+    if getattr(sys, "frozen", False) and not os.environ.get("FILM_LAB_NO_WINDOW"):
+        run_desktop(port)
+    else:
+        print(f"Film Lab running on http://{DEFAULT_HOST}:{port}")
+        app.run(host=DEFAULT_HOST, port=port, debug=False, use_reloader=False, threaded=True)
