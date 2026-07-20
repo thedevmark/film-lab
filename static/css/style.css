@@ -4650,6 +4650,11 @@ input[type="file"]::file-selector-button {
     max-width: 560px;
     margin: 0 auto;
     padding: 24px 16px 48px;
+    /* The generic `main` rule pins height to the viewport and hides overflow,
+       which amputates every section below the first screenful. This layout is
+       a single tall column: let it grow and let the page scroll. */
+    height: auto;
+    overflow: visible;
 }
 
 .film-panel {
