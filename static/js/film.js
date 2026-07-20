@@ -432,6 +432,28 @@ const FilmLab = (() => {
         const cancelBtn = document.getElementById("film-batch-cancel-btn");
         if (runBtn) runBtn.addEventListener("click", startBatch);
         if (cancelBtn) cancelBtn.addEventListener("click", cancelBatch);
+        _bindFolderPickers();
+    }
+
+    function _bindFolderPickers() {
+        // Native folder dialogs exist only inside the desktop shell, where
+        // pywebview exposes window.pywebview.api. In a plain browser the
+        // Browse buttons stay hidden: a web page cannot obtain an absolute
+        // folder path, and the typed-path inputs still work.
+        const wire = () => {
+            document.querySelectorAll(".film-browse-btn").forEach(btn => {
+                btn.classList.remove("hidden");
+                btn.addEventListener("click", async () => {
+                    const input = document.getElementById(btn.dataset.target);
+                    try {
+                        const dir = await window.pywebview.api.pick_folder(input?.value.trim() || "");
+                        if (dir && input) input.value = dir;
+                    } catch (e) { /* dialog dismissed or bridge gone — keep the typed value */ }
+                });
+            });
+        };
+        if (window.pywebview && window.pywebview.api) wire();
+        else window.addEventListener("pywebviewready", wire);
     }
 
     function startBatch() {

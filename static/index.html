@@ -137,13 +137,21 @@
                 </p>
                 <div class="film-batch-field">
                     <label for="film-batch-source">Source folder</label>
-                    <input type="text" id="film-batch-source" class="film-text-input"
-                           placeholder="D:\Photos\2026-07-14 Shoot" spellcheck="false">
+                    <div class="film-batch-input-row">
+                        <input type="text" id="film-batch-source" class="film-text-input"
+                               placeholder="D:\Photos\2026-07-14 Shoot" spellcheck="false">
+                        <button type="button" class="secondary-btn film-browse-btn hidden"
+                                data-target="film-batch-source">Browse…</button>
+                    </div>
                 </div>
                 <div class="film-batch-field">
                     <label for="film-batch-dest">Output folder</label>
-                    <input type="text" id="film-batch-dest" class="film-text-input"
-                           placeholder="D:\Photos\2026-07-14 Shoot\_film" spellcheck="false">
+                    <div class="film-batch-input-row">
+                        <input type="text" id="film-batch-dest" class="film-text-input"
+                               placeholder="D:\Photos\2026-07-14 Shoot\_film" spellcheck="false">
+                        <button type="button" class="secondary-btn film-browse-btn hidden"
+                                data-target="film-batch-dest">Browse…</button>
+                    </div>
                 </div>
                 <div class="film-batch-progress">
                     <div class="film-batch-track"><div id="film-batch-bar" class="film-batch-bar"></div></div>

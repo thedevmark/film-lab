@@ -90,6 +90,25 @@ def start_server(host: str = DEFAULT_HOST, port: int | None = None) -> int:
     return port
 
 
+class DesktopApi:
+    """JS bridge for the desktop shell, reachable as window.pywebview.api.
+
+    pywebview exposes every public attribute of this object to JS, so the
+    window handle MUST stay underscore-private — exposing it makes pywebview
+    serialize the entire native window object graph into the bridge.
+    """
+
+    def __init__(self):
+        self._window = None
+
+    def pick_folder(self, start_dir: str = "") -> str:
+        import webview
+
+        start = start_dir if start_dir and Path(start_dir).is_dir() else ""
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG, directory=start)
+        return result[0] if result else ""
+
+
 def run_desktop(port: int) -> None:
     """Standalone mode: Flask on a background thread, UI in a native window.
 
@@ -99,12 +118,14 @@ def run_desktop(port: int) -> None:
     import webview
 
     start_server(DEFAULT_HOST, port)
-    webview.create_window(
+    api = DesktopApi()
+    api._window = webview.create_window(
         "Film Lab",
         f"http://{DEFAULT_HOST}:{port}",
         width=1280,
         height=900,
         min_size=(900, 600),
+        js_api=api,
     )
     webview.start()
 

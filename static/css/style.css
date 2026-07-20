@@ -4836,6 +4836,21 @@ input[type="file"]::file-selector-button {
     color: var(--text-muted);
 }
 
+.film-batch-input-row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+
+.film-batch-input-row .film-text-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.film-browse-btn {
+    white-space: nowrap;
+}
+
 .film-text-input {
     width: 100%;
     padding: 8px 10px;
