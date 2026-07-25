@@ -768,3 +768,43 @@ class TestFilmRoutes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestExportPreservesChroma(unittest.TestCase):
+    """The JPEG encode must not undo the grain.
+
+    Pillow defaults to 4:2:0 at quality 95, which averages chroma over every
+    2x2 block. Grain's chroma component is a 1px feature, so the default encode
+    collapsed the channel correlation from the 0.80 add_grain builds to 0.99 —
+    handing back exactly the monochrome overlay the grain rewrite removed.
+    """
+
+    def test_jpeg_export_keeps_the_channels_decorrelated(self):
+        import io
+
+        from PIL import Image
+
+        from filmlab.blur import gaussian_blur
+        from filmlab.effects import add_grain
+
+        plate = np.full((512, 512, 3), 0.45, dtype=np.float32)
+        grained = add_grain(plate, intensity=0.032, size=0.5 / 512, seed=7)
+
+        buf = io.BytesIO()
+        Image.fromarray(
+            np.rint(grained * 255.0).clip(0, 255).astype(np.uint8)
+        ).save(buf, format="JPEG", quality=95, subsampling=0)
+        buf.seek(0)
+        decoded = np.asarray(Image.open(buf).convert("RGB")).astype(np.float32) / 255.0
+
+        detail = [decoded[:, :, c] - gaussian_blur(decoded[:, :, c], 3.0)
+                  for c in range(3)]
+
+        def correlation(a, b):
+            a = a.ravel() - a.mean()
+            b = b.ravel() - b.mean()
+            return float((a * b).sum() / np.sqrt((a * a).sum() * (b * b).sum()))
+
+        # 4:2:0 lands at ~0.99 here; 4:4:4 preserves the ~0.80 that went in.
+        self.assertLess(correlation(detail[0], detail[1]), 0.95,
+                        "chroma subsampling has flattened the grain to monochrome")

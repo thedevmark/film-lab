@@ -298,7 +298,13 @@ def process_photo(input_path: Path, params: dict) -> bytes:
     # lands a hair under 1.0, and 254.99998 floors to 254. White has to stay 255.
     pil_out = Image.fromarray(np.rint(rgb * 255.0).clip(0, 255).astype(np.uint8))
     buf = io.BytesIO()
-    pil_out.save(buf, format="JPEG", quality=95)
+    # subsampling=0 is 4:4:4. Pillow's default at this quality is 4:2:0, which
+    # averages chroma over every 2x2 block — and grain's chroma component lives
+    # entirely at 1px. Measured on a flat plate, the default encode pulled the
+    # channel correlation from the 0.80 the grain is built with up to 0.99,
+    # i.e. it threw the chroma half of the grain away and handed back the
+    # monochrome overlay this pipeline stopped producing. Costs ~45% file size.
+    pil_out.save(buf, format="JPEG", quality=95, subsampling=0)
     buf.seek(0)
     return buf.read()
 
