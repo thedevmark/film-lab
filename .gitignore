@@ -22,3 +22,6 @@ luts/private/
 
 # Superpowers SDD scratch (task briefs, reviews, ledger) — internal, never shipped
 .superpowers/
+
+# Browser-automation scratch from MCP sessions.
+.playwright-mcp/

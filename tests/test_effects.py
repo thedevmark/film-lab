@@ -211,15 +211,36 @@ class TestGrain(unittest.TestCase):
 
         np.testing.assert_allclose(out, img)
 
-    def test_grain_is_monochrome_not_chroma_speckle(self):
-        """Independent per-channel noise reads as a noisy sensor, not film.
-        The three channels must receive the SAME perturbation."""
-        img = np.full((64, 64, 3), 0.5, dtype=np.float32)
+    def test_channels_are_mostly_shared_but_not_identical(self):
+        """Independent per-channel noise reads as a noisy sensor, not film — so
+        the channels must be strongly correlated. But the reference scans
+        measured 0.75-0.89, not 1.00: the dye layers are three separate
+        emulsions and a perfectly monochrome field is as wrong in the other
+        direction. Forcing them identical is what made the grain read as an
+        overlay laid on top of the picture rather than part of it.
+        """
+        img = np.full((128, 128, 3), 0.5, dtype=np.float32)
 
-        grain = effects.add_grain(img, intensity=0.2, size=0.02, seed=7) - img
+        grain = effects.add_grain(img, intensity=0.2, size=0.01, seed=7) - img
 
-        np.testing.assert_allclose(grain[:, :, 0], grain[:, :, 1], atol=1e-6)
-        np.testing.assert_allclose(grain[:, :, 1], grain[:, :, 2], atol=1e-6)
+        def correlation(a, b):
+            a = a.ravel() - a.mean()
+            b = b.ravel() - b.mean()
+            return float((a * b).sum() / math.sqrt((a * a).sum() * (b * b).sum()))
+
+        for first, second in ((0, 1), (0, 2), (1, 2)):
+            coefficient = correlation(grain[:, :, first], grain[:, :, second])
+            self.assertGreater(coefficient, 0.6, "channels are near-independent speckle")
+            self.assertLess(coefficient, 0.97, "channels are a single monochrome field")
+
+    def test_red_is_the_grainiest_channel(self):
+        """Red sits in the fastest, coarsest-grained layer, and measured
+        loudest in both reference scans."""
+        img = np.full((128, 128, 3), 0.5, dtype=np.float32)
+
+        grain = effects.add_grain(img, intensity=0.2, size=0.01, seed=11) - img
+
+        self.assertGreater(float(grain[:, :, 0].std()), float(grain[:, :, 1].std()))
 
     def test_grain_peaks_in_the_midtones(self):
         """The old weight (1 - luma*0.85) put maximum grain in the blacks."""
@@ -232,6 +253,49 @@ class TestGrain(unittest.TestCase):
 
         self.assertGreater(amplitude(midtone), amplitude(shadow))
         self.assertGreater(amplitude(midtone), amplitude(highlight))
+
+    def test_grain_survives_into_the_shadows_and_highlights(self):
+        """The reference scans hold ~3/255 of grain in the deepest shadows and
+        just short of white, against an ~8/255 midtone peak — a floor a bit
+        over a third of peak, not zero. The old 4L(1-L) weight vanished at both
+        ends, which is why dark frames came back plasticky.
+        """
+        midtone = np.full((96, 96, 3), 0.45, dtype=np.float32)
+        shadow = np.full((96, 96, 3), 0.03, dtype=np.float32)
+        highlight = np.full((96, 96, 3), 0.97, dtype=np.float32)
+
+        def amplitude(img):
+            # Measure on green, away from the clip at 0 and 1.
+            return float((effects.add_grain(img, 0.05, 0.001, seed=5) - img)[:, :, 1].std())
+
+        peak = amplitude(midtone)
+        for name, img in (("shadow", shadow), ("highlight", highlight)):
+            ratio = amplitude(img) / peak
+            self.assertGreater(ratio, 0.20, f"grain dies in the {name}")
+            self.assertLess(ratio, 0.60, f"grain is flat across tone in the {name}")
+
+    def test_grain_is_band_pass_not_a_low_pass_blob(self):
+        """The signature of the mush this replaced. White noise pushed through
+        a plain Gaussian stays positively correlated for many pixels, which
+        reads as low-frequency blotching. Real grain decorrelates within about
+        two pixels and overshoots slightly negative — the measured profile was
+        [1.0, 0.21, -0.11, -0.02, ...]. Assert the overshoot: it is what
+        separates a band-pass field from a blurred one.
+        """
+        img = np.full((256, 256, 3), 0.5, dtype=np.float32)
+
+        grain = (effects.add_grain(img, 0.2, size=0.004, seed=13) - img)[:, :, 1]
+        grain = grain.astype(np.float64)
+        grain -= grain.mean()
+
+        power = np.abs(np.fft.fft2(grain)) ** 2
+        autocorrelation = np.fft.ifft2(power).real
+        autocorrelation /= autocorrelation[0, 0]
+
+        # Somewhere in the first few lags the field must go negative. A Gaussian
+        # blur of white noise is non-negative at every lag, so this fails
+        # outright on the old implementation.
+        self.assertLess(min(autocorrelation[0, k] for k in range(1, 6)), -0.01)
 
     def test_is_deterministic_under_a_seed(self):
         img = np.full((32, 32, 3), 0.5, dtype=np.float32)

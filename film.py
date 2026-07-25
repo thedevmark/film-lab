@@ -49,8 +49,8 @@ BUILTIN_PRESETS = {
         "grade_strength":     0.85,
         "exposure_bias":      0.0,
         "contrast_strength":  0.0,
-        "grain_intensity":    0.022,
-        "grain_size":         0.0018,
+        "grain_intensity":    0.034,
+        "grain_size":         0.00028,
         "halation_intensity": 0.50,
         "halation_radius":    0.010,
     },
@@ -59,8 +59,8 @@ BUILTIN_PRESETS = {
         "grade_strength":     0.50,
         "exposure_bias":      0.0,
         "contrast_strength":  0.0,
-        "grain_intensity":    0.014,
-        "grain_size":         0.0012,
+        "grain_intensity":    0.026,
+        "grain_size":         0.00022,
         "halation_intensity": 0.30,
         "halation_radius":    0.012,
     },
@@ -77,7 +77,7 @@ PARAM_SPEC = {
     "grade_strength":     (float, 0.0,   1.0),
     "exposure_bias":      (float, -5.0,  5.0),    # EV stops, not an offset
     "contrast_strength":  (float, -1.0,  1.0),
-    "grain_intensity":    (float, 0.0,   0.10),  # 0.02 ~= 5 levels of 8-bit std
+    "grain_intensity":    (float, 0.0,   0.10),  # 0.032 ~= 8 levels of 8-bit std
     "grain_size":         (float, 0.0,   0.05),   # fraction of the short edge
     "halation_intensity": (float, 0.0,   1.0),
     "halation_radius":    (float, 0.0,   0.10),   # fraction of the long edge
@@ -89,8 +89,8 @@ DEFAULT_PARAMS = {
     "grade_strength":     0.85,
     "exposure_bias":      0.0,
     "contrast_strength":  0.0,
-    "grain_intensity":    0.018,
-    "grain_size":         0.0015,
+    "grain_intensity":    0.032,
+    "grain_size":         0.00024,
     "halation_intensity": 0.45,
     "halation_radius":    0.010,
     "seed":               0,   # 0 == auto: derive it from the file. See _seed_from_file.

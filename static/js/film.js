@@ -13,8 +13,8 @@ const FilmLab = (() => {
         grade_strength:      0.85,
         exposure_bias:       0.00,
         contrast_strength:   0.00,
-        grain_intensity:     0.018,
-        grain_size:          0.0015,
+        grain_intensity:     0.032,
+        grain_size:          0.00024,
         halation_intensity:  0.45,
         halation_radius:     0.010,
         seed:                0,  // 0 == auto: the server derives it from the file
@@ -67,8 +67,8 @@ const FilmLab = (() => {
             id:      "film-grain-size",
             param:   "grain_size",
             valueId: "film-grain-size-val",
-            format:  v => `${(v * 100).toFixed(2)}%`,  // of the short edge
-            min: 0, max: 0.005, step: 0.0001,
+            format:  v => `${(v * 100).toFixed(3)}%`,  // of the short edge
+            min: 0, max: 0.0010, step: 0.00002,
         },
         {
             id:      "film-halation-intensity",

@@ -31,6 +31,25 @@ def _box_blur_axis(arr, radius, axis):
     return np.moveaxis(out, 0, axis)
 
 
+def box_blur(arr, sigma):
+    """A SINGLE box pass per axis, sized to match `sigma`'s second moment.
+
+    One box is a poor Gaussian — its frequency response rings. That matters when
+    the blur is the visible output (halation) and does not when the blur is only
+    being subtracted to mark a low-frequency cutoff (grain's band-pass), where
+    everything it gets wrong lives below the band anyone can see. Three times
+    cheaper than gaussian_blur, which is what keeps grain off the critical path
+    of a batch export.
+    """
+    if sigma <= 0:
+        return arr
+
+    # Second moment of a (2r+1)-wide box is ((2r+1)^2 - 1) / 12.
+    radius = max(1, int(round((math.sqrt(12.0 * sigma * sigma + 1.0) - 1.0) / 2.0)))
+    out = _box_blur_axis(arr.astype(np.float32, copy=True), radius, axis=0)
+    return _box_blur_axis(out, radius, axis=1)
+
+
 def gaussian_blur(arr, sigma):
     """Gaussian blur, approximated by three box passes."""
     if sigma <= 0:
